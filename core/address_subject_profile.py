@@ -4,8 +4,10 @@ from core.subject_requirements import REQUIRED_SUBJECT_FIELDS
 
 def blank_subject_profile(address: str = "") -> dict:
     return {
-        "subject_address": address.strip(),
+        "subject_address": address.strip() or None,
         "above_grade_sqft": None,
+        "property_type": None,
+        "property_subtype": None,
         "beds": None,
         "baths": None,
         "year_built": None,
@@ -15,12 +17,12 @@ def blank_subject_profile(address: str = "") -> dict:
         "lot_size_sqft": None,
         "style": None,
         "stories": None,
-        "property_type": None,
         "basement_sqft": None,
         "finished_basement_sqft": None,
         "source_summary": [],
         "field_sources": {},
         "subject_profile_ready": False,
+        "subject_acquisition_status": "not_started",
     }
 
 

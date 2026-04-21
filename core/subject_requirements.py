@@ -1,19 +1,20 @@
 REQUIRED_SUBJECT_FIELDS = [
     "subject_address",
     "above_grade_sqft",
-    "beds",
-    "baths",
-    "year_built",
+    "property_type",
 ]
 
 OPTIONAL_SUBJECT_FIELDS = [
+    "property_subtype",
+    "beds",
+    "baths",
+    "year_built",
     "real_avm",
     "real_avm_range_low",
     "real_avm_range_high",
     "lot_size_sqft",
     "style",
     "stories",
-    "property_type",
     "basement_sqft",
     "finished_basement_sqft",
 ]
@@ -21,6 +22,8 @@ OPTIONAL_SUBJECT_FIELDS = [
 FIELD_LABELS = {
     "subject_address": "Subject Address",
     "above_grade_sqft": "Above Grade SqFt",
+    "property_type": "Property Type",
+    "property_subtype": "Property Subtype",
     "beds": "Bedrooms",
     "baths": "Bathrooms",
     "year_built": "Year Built",
@@ -30,7 +33,6 @@ FIELD_LABELS = {
     "lot_size_sqft": "Lot Size SqFt",
     "style": "Style",
     "stories": "Stories",
-    "property_type": "Property Type",
     "basement_sqft": "Basement SqFt",
     "finished_basement_sqft": "Finished Basement SqFt",
 }
