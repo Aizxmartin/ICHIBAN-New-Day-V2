@@ -1,0 +1,924 @@
+{
+  "file_name": "ICHIBAN_Insight_Report_Governance_v2.json",
+  "system_name": "ICHIBAN INSIGHT",
+  "version": "2.0",
+  "created_for": "local Streamlit / Python development",
+  "created_date": "2026-04-26",
+  "purpose": "Governance and report-generation schema for the ICHIBAN INSIGHT valuation workflow. This file tells the local program how to structure deterministic math handoff, guide Mini GPT / GPT narrative generation, and produce a deep-dive, agent-grade CMA / pricing strategy report.",
+  "core_philosophy": {
+    "primary_rule": "Math first. GPT second.",
+    "meaning": "The app must calculate, store, and pass all deterministic facts, filters, metrics, adjustments, 1004MC rates, time adjustments, and pricing outputs before GPT writes narrative analysis.",
+    "gpt_role": "GPT should not invent the valuation. GPT should explain what the program did, what affected value, why it mattered, and how it affects the seller's going-to-market strategy.",
+    "seller_question_to_answer": "What is likely to happen to this specific property if it goes to market now, and what pricing or presentation choices could make the outcome faster, slower, stronger, or weaker?"
+  },
+  "architecture": {
+    "model": "three_layer_app_agent",
+    "layers": {
+      "layer_1_user_input": [
+        "subject property PDF upload, preferably CoreLogic Realist when available",
+        "manual subject property fallback fields",
+        "MLS market/comparable data upload",
+        "Zillow estimate, Redfin estimate, RealAVM or other AVM values when provided",
+        "agent notes, condition notes, showing readiness notes, and estimated days until market"
+      ],
+      "layer_2_private_logic": [
+        "field mapping and normalization",
+        "comp filtering and ranking",
+        "adjustment schema and weighting",
+        "1004MC and time adjustment logic",
+        "momentum and absorption calculations",
+        "private prompts and report-governance rules",
+        "reconciliation logic"
+      ],
+      "layer_3_output": [
+        "final CMA / valuation report",
+        "agent-facing market interpretation",
+        "seller-ready pricing guidance",
+        ".docx export",
+        "optional print/PDF output generated from the clean report, not Streamlit browser UI"
+      ]
+    },
+    "visibility_policy": {
+      "share_with_user": [
+        "layer_1_user_input",
+        "layer_3_output"
+      ],
+      "keep_private": [
+        "layer_2_private_logic"
+      ],
+      "do_not_print_or_export": [
+        "debug expanders",
+        "GPT prompt text",
+        "full engine JSON dump",
+        "Streamlit buttons",
+        "navigation controls",
+        "intermediate private schemas",
+        "private adjustment rule internals unless intentionally summarized"
+      ]
+    }
+  },
+  "local_development": {
+    "recommended_config_path": "config/ICHIBAN_Insight_Report_Governance_v2.json",
+    "recommended_runtime_payload_path": "outputs/ichiban_analysis_payload.json",
+    "recommended_docx_output_path": "outputs/{subject_address_slug}_ICHIBAN_Insight_Report.docx",
+    "recommended_markdown_preview_path": "outputs/{subject_address_slug}_ICHIBAN_Insight_Report.md",
+    "streamlit_note": "The Streamlit page should preview the clean report and provide export buttons, but the exported report must not be created by printing the app screen.",
+    "development_status": "local_workflow_active"
+  },
+  "runtime_mode": {
+    "analysis_depth": "deep_dive",
+    "page_limit": null,
+    "allow_unlimited_narrative_depth": true,
+    "do_not_use_light_summary_mode": true,
+    "section_headers_fixed": true,
+    "section_content_flexible": true,
+    "preferred_output_format": ".docx",
+    "secondary_output_formats": [
+      ".md",
+      ".pdf"
+    ],
+    "writing_goal": "Produce an impressive, informative, and useful property-specific market summary that a Realtor would be excited to review, even if the conclusion is conservative."
+  },
+  "required_input_payload": {
+    "subject_profile": {
+      "required_fields": [
+        "address",
+        "property_type_or_subtype",
+        "levels_style",
+        "above_grade_sqft",
+        "year_built"
+      ],
+      "preferred_fields": [
+        "basement_sqft",
+        "finished_basement_sqft",
+        "bedrooms",
+        "bathrooms",
+        "garage_spaces",
+        "lot_size",
+        "subdivision",
+        "school_district",
+        "condition_notes",
+        "special_features",
+        "known_deficiencies",
+        "agent_comments"
+      ],
+      "subject_pdf_intake": {
+        "preferred": true,
+        "source_examples": [
+          "CoreLogic Realist subject property PDF"
+        ],
+        "fallback": "manual_entry",
+        "must_verify_before_valuation": [
+          "address",
+          "above_grade_sqft_or_usable_sqft",
+          "property_type_or_subtype"
+        ],
+        "known_field_mappings": {
+          "Bldg Sq Ft - Finished": "above_grade_sqft",
+          "Bldg Sq Ft - Basement": "basement_sqft",
+          "Bldg Sq Ft - Finished Basement": "finished_basement_sqft",
+          "Land Use - County": "property_type",
+          "Year Built": "year_built",
+          "RealAVM": "real_avm"
+        }
+      }
+    },
+    "market_data": {
+      "source": "agent_uploaded_MLS_file",
+      "preserve_master_dataset": true,
+      "all_statuses_preserved": true,
+      "required_normalized_fields": [
+        "status",
+        "close_price",
+        "list_price",
+        "net_close_price",
+        "concessions_amount",
+        "close_date",
+        "original_list_date",
+        "days_in_mls",
+        "above_grade_finished_area",
+        "basement_sqft",
+        "finished_basement_sqft",
+        "bedrooms_total",
+        "bathrooms_total_integer",
+        "garage_spaces",
+        "year_built",
+        "property_sub_type",
+        "levels",
+        "public_remarks",
+        "broker_remarks",
+        "street_number",
+        "street_name",
+        "city",
+        "postal_code",
+        "subdivision"
+      ],
+      "days_on_market_standard": {
+        "preferred_field": "Days in MLS",
+        "internal_name": "days_in_mls",
+        "acceptable_aliases": [
+          "DIM",
+          "DOM",
+          "Days on Market"
+        ],
+        "report_label": "Days in MLS"
+      }
+    },
+    "online_estimates": {
+      "optional": true,
+      "fields": [
+        "zillow_estimate",
+        "redfin_estimate",
+        "real_avm",
+        "real_avm_low",
+        "real_avm_high"
+      ],
+      "use_policy": "Online estimates are benchmarks only. They should be compared to the adjusted comparable evidence but should not override MLS-based valuation support."
+    },
+    "listing_context": {
+      "fields": [
+        "estimated_days_until_market",
+        "seller_goal",
+        "repair_or_update_budget",
+        "agent_known_showing_readiness",
+        "desired_pricing_posture"
+      ],
+      "estimated_days_until_market_required_for_comp_table_policy": true
+    }
+  },
+  "hidden_backend_views": {
+    "market_data_master": "Full normalized MLS export with all statuses preserved.",
+    "market_data_closed_for_pricing": "Closed rows used for comp pricing, adjustment, and reconciliation.",
+    "market_data_market_status": "Active, Pending, Closed, Withdrawn, Expired, and other statuses used for market tone and momentum.",
+    "market_data_gpt_review": "Reduced safe payload for GPT narrative, including relevant metrics, remarks, and selected/rejected comp rationale.",
+    "subject_profile_ready": "Verified subject profile after PDF/manual intake reconciliation.",
+    "analysis_payload": "Final structured JSON package passed to GPT after math calculations are complete."
+  },
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "step_name": "Subject Intake and Verification",
+      "program_action": "Attempt subject PDF extraction first; use manual fallback when PDF extraction is incomplete.",
+      "must_store": [
+        "subject_intake_method",
+        "subject_fields_extracted",
+        "subject_fields_manual",
+        "subject_verification_status",
+        "missing_or_uncertain_subject_fields"
+      ],
+      "gpt_explanation_goal": "Explain data limitations only when relevant; do not overemphasize technical intake issues in the client-facing report."
+    },
+    {
+      "step_number": 2,
+      "step_name": "MLS Data Normalization",
+      "program_action": "Normalize column names, status values, dates, prices, concessions, square footage, basement, garage, remarks, and subdivision fields.",
+      "must_store": [
+        "rows_loaded",
+        "columns_loaded",
+        "normalized_columns",
+        "missing_required_columns",
+        "normalization_warnings"
+      ],
+      "gpt_explanation_goal": "Do not discuss raw normalization unless data limitations materially affect confidence."
+    },
+    {
+      "step_number": 3,
+      "step_name": "Market Scope and Pull Window",
+      "program_action": "Determine radius, subdivision, custom micro-market, property type, style, price band, and time period used.",
+      "must_store": [
+        "market_scope_type",
+        "radius_miles",
+        "subdivision_filter",
+        "property_type_filter",
+        "style_or_levels_filter",
+        "price_band_filter",
+        "data_pull_start_date",
+        "data_pull_end_date",
+        "lookback_months"
+      ],
+      "gpt_explanation_goal": "Explain why the chosen market scope is appropriate and whether the analysis had to start wide before narrowing."
+    },
+    {
+      "step_number": 4,
+      "step_name": "Market Snapshot",
+      "program_action": "Segment the data into Active, Pending, Closed, and other statuses and calculate baseline metrics.",
+      "must_store": [
+        "active_count",
+        "pending_count",
+        "closed_count",
+        "average_days_in_mls_by_status",
+        "median_days_in_mls_by_status",
+        "median_close_price",
+        "average_close_price",
+        "median_price_per_sqft",
+        "close_to_list_ratio",
+        "price_distribution"
+      ],
+      "gpt_explanation_goal": "Translate counts and price distributions into a practical market condition summary."
+    },
+    {
+      "step_number": 5,
+      "step_name": "Absorption and Market Momentum",
+      "program_action": "Calculate absorption, months of inventory, and momentum using the ICHIBAN formula.",
+      "formulas": {
+        "monthly_closed_rate_90_day": "closed_count / 3",
+        "monthly_closed_rate_180_day": "closed_count / 6",
+        "momentum_score_90_day": "active_count / ((closed_count / 3) + pending_count)",
+        "momentum_score_180_day": "active_count / ((closed_count / 6) + pending_count)",
+        "months_of_inventory": "active_count / monthly_closed_rate"
+      },
+      "must_store": [
+        "absorption_rate",
+        "months_of_inventory",
+        "momentum_score",
+        "momentum_window_days",
+        "active_avg_dim",
+        "pending_avg_dim",
+        "closed_avg_dim",
+        "momentum_interpretation_flag"
+      ],
+      "interpretation_guidance": {
+        "compare_pending_vs_active_dim": "Fast pending DIM with slow active DIM suggests buyers act quickly only when price/condition are aligned.",
+        "compare_subject_to_momentum": "Determine whether subject is likely to outperform, match, or underperform local market speed."
+      },
+      "gpt_explanation_goal": "Explain what the local radius/micro-market suggests about seller timeline, buyer urgency, and pricing sensitivity."
+    },
+    {
+      "step_number": 6,
+      "step_name": "1004MC Market Change Analysis",
+      "program_action": "Calculate and store market change rates before time adjustments are applied.",
+      "must_run_before": [
+        "time_adjustments_to_comps"
+      ],
+      "required_outputs": [
+        "annual_market_change_percent",
+        "monthly_market_change_percent",
+        "market_trend_classification",
+        "current_period_median",
+        "prior_period_median",
+        "calculation_method",
+        "1004mc_confidence_or_limitation_notes"
+      ],
+      "example_formula": {
+        "annual_market_change_percent": "(median_current_period - median_prior_period) / median_prior_period",
+        "monthly_market_change_percent": "annual_market_change_percent / 12"
+      },
+      "classification_thresholds": {
+        "stable_market_default_band": "-1.0% to +1.0% annual change",
+        "increasing_market": "annual_market_change_percent > +1.0%",
+        "declining_market": "annual_market_change_percent < -1.0%",
+        "note": "Thresholds may be adjusted by configuration after testing against local MLS behavior."
+      },
+      "gpt_explanation_goal": "Explain whether the market is increasing, stable, or declining and why older sales were or were not time-adjusted."
+    },
+    {
+      "step_number": 7,
+      "step_name": "Comparable Selection Funnel",
+      "program_action": "Start broad when needed, narrow to the best competitive set, and reject false anchors.",
+      "stages": [
+        "capture_broader_market",
+        "narrow_to_core_competitive_set",
+        "review_superiority_or_inferiority",
+        "eliminate_false_anchors",
+        "rank_primary_and_secondary_comps"
+      ],
+      "primary_filters": [
+        "property_type",
+        "levels_or_style",
+        "above_grade_sqft_similarity",
+        "location_or_subdivision",
+        "sale_recency",
+        "condition_or_renovation_tier",
+        "bed_bath_similarity",
+        "garage_similarity",
+        "basement_similarity"
+      ],
+      "subject_sqft_filter_policy": {
+        "above_grade_sqft_preferred_range": "85% to 110% of subject above-grade finished area when sufficient comps exist",
+        "use_above_grade_not_total_finished_area": true,
+        "allow_expand_if_insufficient_comps": true
+      },
+      "must_store": [
+        "candidate_comp_count",
+        "primary_comps",
+        "secondary_comps",
+        "rejected_comps",
+        "false_anchors",
+        "comp_selection_explanation"
+      ],
+      "gpt_explanation_goal": "Explain why the selected comps were useful and why weaker or misleading comps did not control value."
+    },
+    {
+      "step_number": 8,
+      "step_name": "Renovation and Condition Tier Review",
+      "program_action": "Classify subject and comps into renovation/condition tiers when remarks, photos, notes, or structured fields support it.",
+      "tiers": [
+        "Original Condition",
+        "Mechanically Updated",
+        "Moderately Remodeled",
+        "Strong Remodel",
+        "Full Designer Remodel"
+      ],
+      "signals": [
+        "public_remarks",
+        "broker_remarks",
+        "agent_condition_notes",
+        "year_built",
+        "recent_mechanical_updates",
+        "kitchen_and_bath_updates",
+        "flooring",
+        "paint",
+        "roof_hvac_water_heater",
+        "deferred_maintenance",
+        "cleanliness_and_showing_readiness"
+      ],
+      "must_store": [
+        "subject_renovation_tier",
+        "comp_renovation_tiers",
+        "condition_adjustment_notes",
+        "remarks_based_upgrade_claims",
+        "remarks_based_red_flags"
+      ],
+      "gpt_explanation_goal": "Explain how condition and renovation tier influence buyer response, pricing resistance, and likely showing performance."
+    },
+    {
+      "step_number": 9,
+      "step_name": "Physical and Qualitative Adjustments",
+      "program_action": "Apply structured adjustments for measurable differences and supported qualitative differences.",
+      "adjustment_categories": [
+        "above_grade_sqft",
+        "basement_sqft",
+        "finished_basement_sqft",
+        "bedrooms",
+        "bathrooms",
+        "garage_spaces",
+        "lot_or_site",
+        "style_or_level",
+        "condition_or_renovation_tier",
+        "special_features",
+        "negative_externalities",
+        "concessions_or_net_price"
+      ],
+      "must_store_per_comp": [
+        "net_close_price",
+        "physical_adjustment_amount",
+        "adjusted_price_before_time",
+        "adjustment_breakdown",
+        "adjustment_notes"
+      ],
+      "gpt_explanation_goal": "Explain the largest adjustment drivers and how they moved the comp evidence up or down."
+    },
+    {
+      "step_number": 10,
+      "step_name": "Time Adjustments",
+      "program_action": "Apply time adjustments using the stored 1004MC monthly market change rate when supported.",
+      "required_prior_step": "1004MC Market Change Analysis",
+      "formula": "time_adjustment_percent = monthly_market_change_percent * months_since_sale; time_adjustment_amount = adjusted_price_before_time * time_adjustment_percent; time_adjusted_comp_price = adjusted_price_before_time + time_adjustment_amount",
+      "must_store_per_comp": [
+        "sale_date",
+        "months_since_sale",
+        "monthly_market_change_percent",
+        "time_adjustment_percent",
+        "time_adjustment_amount",
+        "time_adjusted_comp_price"
+      ],
+      "gpt_explanation_goal": "Explain whether time adjustments materially affected the reconciliation or were minimal."
+    },
+    {
+      "step_number": 11,
+      "step_name": "Value Reconciliation",
+      "program_action": "Reconcile the adjusted and time-adjusted comp range with AVM benchmarks, local momentum, active competition, and subject positioning.",
+      "must_store": [
+        "raw_closed_comp_range",
+        "adjusted_comp_range",
+        "time_adjusted_comp_range",
+        "weighted_value_center",
+        "online_estimate_average",
+        "recommended_price_range_low",
+        "recommended_price_range_high",
+        "recommended_list_price",
+        "pricing_strategy_posture",
+        "range_confidence_notes"
+      ],
+      "range_policy": {
+        "always_produce_range": true,
+        "preferred_max_range_width": 50000,
+        "allow_wider_range_when": [
+          "limited comparable data",
+          "unique property",
+          "major condition uncertainty",
+          "unusual acreage_or_site",
+          "large gap between as_is_and_improved condition",
+          "market volatility",
+          "pre-listing more than 30 days away"
+        ],
+        "seller_decision_note": "Seller may choose to list within, above, or below the range after professional agent discussion."
+      },
+      "gpt_explanation_goal": "Explain why the final range is appropriate, what supports the low end, what supports the high end, and why the recommended list price is practical."
+    },
+    {
+      "step_number": 12,
+      "step_name": "GPT Deep-Dive Narrative Generation",
+      "program_action": "Send structured analysis payload to GPT only after deterministic steps are complete.",
+      "gpt_must_receive": [
+        "workflow_audit",
+        "subject_profile",
+        "market_snapshot",
+        "momentum_metrics",
+        "1004mc_summary",
+        "selected_and_rejected_comps",
+        "adjustment_effects",
+        "time_adjustment_effects",
+        "active_competition",
+        "pricing_reconciliation",
+        "risk_factors",
+        "disclaimer_text"
+      ],
+      "gpt_explanation_goal": "Produce a deep, agent-grade, property-specific market and pricing strategy report."
+    },
+    {
+      "step_number": 13,
+      "step_name": "Clean Report Export",
+      "program_action": "Generate .docx and optional markdown/PDF from the final report object, not the Streamlit app page.",
+      "must_exclude": [
+        "buttons",
+        "debug outputs",
+        "prompts",
+        "raw engine JSON",
+        "private logic"
+      ],
+      "gpt_explanation_goal": "Not applicable. This is an export/rendering step."
+    }
+  ],
+  "comp_inclusion_policy": {
+    "purpose": "Control when detailed comparable tables should appear in the client-facing report.",
+    "input_field": "estimated_days_until_market",
+    "default_include_detailed_comps": false,
+    "include_detailed_comps_only_if_market_timing_days_lte": 30,
+    "when_days_until_market_lte_30": {
+      "include_primary_comp_table": true,
+      "include_secondary_comp_table": true,
+      "include_active_pending_competition_table": true,
+      "include_comp_selection_criteria_note": true,
+      "include_client_facing_note": true
+    },
+    "when_days_until_market_gt_30": {
+      "include_primary_comp_table": false,
+      "include_secondary_comp_table": false,
+      "include_active_pending_competition_table": false,
+      "include_comp_selection_criteria_note": false,
+      "include_client_facing_note": true,
+      "replace_with_sections": [
+        "market_summary",
+        "absorption_and_momentum",
+        "pricing_outlook",
+        "subject_positioning_summary",
+        "recommended_recheck_window"
+      ]
+    },
+    "client_facing_note": "Detailed comparable home data is most useful for clients who are planning to come to market within the next 30 days, when the most recent sales and active competition are most relevant to near-term pricing decisions. For clients with a longer planning horizon, this report emphasizes market summary, pricing guidance, and competitive positioning, with a recommendation to refresh the comparable property set closer to the expected listing date.",
+    "recommended_recheck_window": "Refresh the comparable sales set and competing listings when the client is within 30 days of listing, or sooner if market conditions shift materially."
+  },
+  "gpt_narrative_rules": {
+    "mode": "deep_dive_ai_analysis",
+    "must_not_be_generic": true,
+    "must_not_overstate_value": true,
+    "must_not_ignore_negative_attributes": true,
+    "must_not_rely_solely_on_avms": true,
+    "must_explain_program_steps": true,
+    "must_explain_what_affected_value": true,
+    "must_translate_data_to_market_strategy": true,
+    "voice": "experienced valuation advisor, not salesperson",
+    "tone": "professional, objective, confident, clear, and seller-ready",
+    "paragraph_style": "short paragraphs with strong section structure",
+    "allowed_depth": "as much detail as necessary to be useful and impressive",
+    "avoid": [
+      "generic statements such as 'the market is balanced' without subject-specific explanation",
+      "unsupported certainty",
+      "excessive promotional language",
+      "pretending AVMs are final value",
+      "hiding limitations",
+      "changing logic between reports without explanation"
+    ],
+    "must_include_analysis_of": [
+      "whether this property is likely to sell faster or slower than the local average",
+      "what could move the subject upward in buyer perception",
+      "what could create buyer resistance",
+      "what timeline the seller should reasonably expect",
+      "where pricing cliffs may occur",
+      "how active competition affects launch strategy",
+      "how pending speed affects buyer urgency",
+      "how closed DIM affects realistic expectations",
+      "how condition and presentation could change market response"
+    ],
+    "subject_specific_market_performance": {
+      "required": true,
+      "fields_to_address": [
+        "expected_speed_vs_local_market",
+        "expected_showing_activity",
+        "pricing_sensitivity",
+        "buyer_reaction_likelihood",
+        "best_case_outcome",
+        "risk_scenario",
+        "what_moves_property_up",
+        "what_slows_property_down",
+        "practical_timeline_expectation"
+      ],
+      "interpretation_standard": "Use local radius/micro-market evidence first. General county/metro market statements are background only."
+    }
+  },
+  "report_sections": [
+    {
+      "order": 1,
+      "section_key": "executive_summary",
+      "title": "Executive Summary",
+      "required": true,
+      "purpose": "Summarize the conclusion, suggested list range, recommended list posture, and the main reason behind the valuation.",
+      "content_requirements": [
+        "recommended_price_range_low_to_high",
+        "recommended_list_price_or_posture",
+        "one-paragraph market conclusion",
+        "top three value-supporting observations",
+        "top three value constraints or risks"
+      ]
+    },
+    {
+      "order": 2,
+      "section_key": "subject_property_overview",
+      "title": "Subject Property Overview",
+      "required": true,
+      "purpose": "Describe the subject property and identify key valuation-relevant traits.",
+      "content_requirements": [
+        "address",
+        "property type and style",
+        "above-grade square footage",
+        "basement and garage summary",
+        "year built",
+        "subdivision or location context",
+        "condition and renovation tier if available",
+        "special features and known limitations"
+      ]
+    },
+    {
+      "order": 3,
+      "section_key": "local_market_snapshot",
+      "title": "Local Market Snapshot",
+      "required": true,
+      "purpose": "Summarize current local market evidence from the MLS pull.",
+      "content_requirements": [
+        "scope of data pull",
+        "active_count",
+        "pending_count",
+        "closed_count",
+        "price band context",
+        "average and median Days in MLS by status",
+        "close-to-list ratio if available"
+      ]
+    },
+    {
+      "order": 4,
+      "section_key": "market_momentum_and_absorption",
+      "title": "Market Momentum & Absorption",
+      "required": true,
+      "purpose": "Explain how quickly the local market is absorbing inventory and what that means for seller timeline.",
+      "content_requirements": [
+        "absorption rate",
+        "months of inventory",
+        "momentum score",
+        "comparison of active DIM vs pending DIM vs closed DIM",
+        "buyer urgency interpretation",
+        "pricing sensitivity interpretation"
+      ]
+    },
+    {
+      "order": 5,
+      "section_key": "1004mc_time_trend_analysis",
+      "title": "1004MC / Time Trend Analysis",
+      "required": true,
+      "purpose": "Explain market direction and whether time adjustments were applied.",
+      "content_requirements": [
+        "annual_market_change_percent",
+        "monthly_market_change_percent",
+        "market_trend_classification",
+        "whether time adjustments were applied",
+        "impact of time adjustments on valuation",
+        "limitations if sample size is thin"
+      ]
+    },
+    {
+      "order": 6,
+      "section_key": "subject_specific_market_performance",
+      "title": "Subject-Specific Market Performance",
+      "required": true,
+      "purpose": "Answer what is likely to happen to this specific property in this local market.",
+      "content_requirements": [
+        "likely faster_or_slower_than_local_average",
+        "expected timeline",
+        "what would accelerate the sale",
+        "what would slow the sale",
+        "price positioning cliff",
+        "presentation/condition recommendations that could improve market response"
+      ]
+    },
+    {
+      "order": 7,
+      "section_key": "comparable_selection_explanation",
+      "title": "Comparable Selection Explanation",
+      "required": true,
+      "purpose": "Explain how comps were selected, ranked, and rejected.",
+      "content_requirements": [
+        "primary comp criteria",
+        "secondary comp criteria",
+        "why selected comps matter",
+        "why rejected comps or false anchors did not control value",
+        "how remarks influenced interpretation"
+      ]
+    },
+    {
+      "order": 8,
+      "section_key": "adjustment_summary",
+      "title": "Adjustment Summary",
+      "required": true,
+      "purpose": "Summarize the value effects from physical, condition, qualitative, concession, and time adjustments.",
+      "content_requirements": [
+        "net price / concession impact",
+        "above-grade square footage adjustment impact",
+        "basement adjustment impact",
+        "condition / renovation tier impact",
+        "garage / site / special feature impact if applicable",
+        "time adjustment impact",
+        "largest upward and downward adjustment drivers"
+      ]
+    },
+    {
+      "order": 9,
+      "section_key": "value_range_reconciliation",
+      "title": "Value Range Reconciliation",
+      "required": true,
+      "purpose": "Reconcile raw comps, adjusted comps, time-adjusted comps, online estimates, and market conditions into a supported range.",
+      "content_requirements": [
+        "raw comp range",
+        "adjusted comp range",
+        "time-adjusted range if applicable",
+        "online estimate average as benchmark only",
+        "supported low end",
+        "supported high end",
+        "reason for final range"
+      ]
+    },
+    {
+      "order": 10,
+      "section_key": "suggested_list_price_range",
+      "title": "Suggested List Price Range",
+      "required": true,
+      "purpose": "Provide the final list range and list strategy.",
+      "content_requirements": [
+        "range_low",
+        "range_high",
+        "recommended list price or recommended posture",
+        "search-band implications",
+        "negotiation room",
+        "risk of pricing above supported range"
+      ]
+    },
+    {
+      "order": 11,
+      "section_key": "pricing_strategy_options",
+      "title": "Pricing Strategy Options",
+      "required": true,
+      "purpose": "Show practical alternative pricing approaches.",
+      "content_requirements": [
+        "conservative strategy",
+        "market-aligned strategy",
+        "aggressive strategy",
+        "expected result of each option",
+        "when each option would or would not make sense"
+      ]
+    },
+    {
+      "order": 12,
+      "section_key": "risk_factors_and_buyer_resistance",
+      "title": "Risk Factors & Buyer Resistance",
+      "required": true,
+      "purpose": "Identify likely buyer objections and pricing risk.",
+      "content_requirements": [
+        "condition objections",
+        "layout or functional objections",
+        "competition objections",
+        "financing / rate sensitivity",
+        "overpricing risk",
+        "stale listing risk",
+        "recommended mitigation"
+      ]
+    },
+    {
+      "order": 13,
+      "section_key": "agent_advisory_notes",
+      "title": "Agent Advisory Notes",
+      "required": true,
+      "purpose": "Provide agent-facing guidance useful for listing conversation and seller counseling.",
+      "content_requirements": [
+        "how to explain range to seller",
+        "what to inspect or verify before final pricing",
+        "what questions to ask during walkthrough",
+        "what improvements or presentation items may matter most",
+        "how to respond if seller wants to price above range"
+      ]
+    },
+    {
+      "order": 14,
+      "section_key": "market_timing_and_recheck_recommendation",
+      "title": "Market Timing & Recheck Recommendation",
+      "required": true,
+      "purpose": "Explain why timing matters and when to refresh the analysis.",
+      "content_requirements": [
+        "seasonal timing note",
+        "expected inventory change risk",
+        "recommended 30-45 day recheck if not listing soon",
+        "trigger events for earlier refresh"
+      ]
+    },
+    {
+      "order": 15,
+      "section_key": "ichiban_methodology_and_disclaimer",
+      "title": "ICHIBAN Methodology & Disclaimer",
+      "required": true,
+      "purpose": "Clarify that the analysis is a professional estimate and decision-support tool, not a guarantee.",
+      "content_requirements": [
+        "methodology summary",
+        "data limitations",
+        "buyer perception / open-market value statement",
+        "seller and Realtor final decision language",
+        "not guarantee of value or final sales price"
+      ]
+    }
+  ],
+  "disclaimer_language": {
+    "required": true,
+    "placement": "near_end",
+    "preferred_title": "ICHIBAN Methodology & Disclaimer",
+    "text_blocks": {
+      "market_estimate_disclaimer": "This analysis is an estimate of potential market value based on currently available market data, comparable sales, and prevailing market conditions. It is intended to provide guidance and support pricing decisions, but it is not a guarantee of value or sales price. Real estate markets are dynamic and influenced by many factors beyond the control of the agent, seller, or analytical tools. Ultimately, market value is determined by buyer perception, buyer demand, and competing properties at the time the home is introduced to the open market. While this analysis incorporates objective data and current trends, buyer preferences, property presentation, financing conditions, and market competition may significantly influence the final outcome. Accordingly, this estimate should be considered a professional opinion based on available information and current market conditions. Actual market performance may vary.",
+      "methodology_disclaimer": "The ICHIBAN analysis is designed to provide a structured, data-driven estimate of potential market value. The analysis incorporates objective market data sourced from the Multiple Listing Service (MLS), as reported by participating real estate agents, along with available public record information. While these sources are widely relied upon within the industry, both MLS and public record data may contain inaccuracies or incomplete information. The resulting summary is intended to serve as a professional decision-support tool. Final pricing decisions remain the responsibility of the licensed real estate professional and the property owner.",
+      "pricing_flexibility_statement": "The Realtor and property owner may determine to list within the suggested range, above the range, or below the range based on professional judgment, client objectives, property presentation, and current market dynamics. Because the open market ultimately determines value, pricing strategy should remain flexible and responsive to buyer feedback and market activity once the property is listed.",
+      "factors_that_may_influence_final_market_value": [
+        "buyer perception and preferences",
+        "competing inventory at time of listing",
+        "market momentum and demand shifts",
+        "property condition and presentation",
+        "interest rates and financing environment",
+        "negotiation dynamics and offer activity"
+      ]
+    }
+  },
+  "output_schema": {
+    "final_report_object": {
+      "metadata": {
+        "report_title": "ICHIBAN Insight Market Valuation Report",
+        "subject_address": "string",
+        "prepared_date": "date",
+        "prepared_for": "string_optional",
+        "prepared_by": "string_optional",
+        "analysis_version": "string"
+      },
+      "pricing_outputs": {
+        "recommended_price_range_low": "number",
+        "recommended_price_range_high": "number",
+        "recommended_list_price": "number_or_null",
+        "pricing_posture": "conservative | market_aligned | aggressive | planning_only",
+        "range_width": "number",
+        "range_notes": "string"
+      },
+      "market_outputs": {
+        "active_count": "number",
+        "pending_count": "number",
+        "closed_count": "number",
+        "average_days_in_mls_by_status": "object",
+        "momentum_score": "number_or_null",
+        "absorption_rate": "number_or_null",
+        "months_of_inventory": "number_or_null",
+        "market_momentum_summary": "string"
+      },
+      "1004mc_outputs": {
+        "annual_market_change_percent": "number_or_null",
+        "monthly_market_change_percent": "number_or_null",
+        "market_trend_classification": "increasing | stable | declining | insufficient_data",
+        "time_adjustments_applied": "boolean",
+        "time_adjustment_summary": "string"
+      },
+      "comp_outputs": {
+        "primary_comps": "array",
+        "secondary_comps": "array",
+        "rejected_comps": "array",
+        "adjustment_summary": "object",
+        "adjusted_range": "object",
+        "time_adjusted_range": "object_or_null"
+      },
+      "narrative_sections": {
+        "executive_summary": "string",
+        "subject_property_overview": "string",
+        "local_market_snapshot": "string",
+        "market_momentum_and_absorption": "string",
+        "1004mc_time_trend_analysis": "string",
+        "subject_specific_market_performance": "string",
+        "comparable_selection_explanation": "string",
+        "adjustment_summary": "string",
+        "value_range_reconciliation": "string",
+        "suggested_list_price_range": "string",
+        "pricing_strategy_options": "string",
+        "risk_factors_and_buyer_resistance": "string",
+        "agent_advisory_notes": "string",
+        "market_timing_and_recheck_recommendation": "string",
+        "ichiban_methodology_and_disclaimer": "string"
+      }
+    }
+  },
+  "quality_control_checks": [
+    "Did the app calculate and store deterministic metrics before GPT narrative generation?",
+    "Did the report produce a suggested list price range?",
+    "Is the range tight enough unless data limitations justify a wider band?",
+    "Did the report explain whether time adjustments were applied?",
+    "Did the report include 1004MC annual and monthly market change when available?",
+    "Did the report distinguish local micro-market behavior from general market commentary?",
+    "Did the report explain likely subject-specific timeline compared to local average?",
+    "Did the report identify what could move the property up or slow it down?",
+    "Did the report discuss active competition and buyer resistance?",
+    "Did the report explain why comps were selected and why false anchors were rejected?",
+    "Did the report include both positive and limiting factors?",
+    "Did the report avoid unsupported certainty and overly promotional language?",
+    "Did the report include the required methodology/disclaimer section?",
+    "Did the report exclude Streamlit controls, debug outputs, private prompts, and raw engine dumps?",
+    "Did the exported .docx read like a professional agent-facing valuation report?"
+  ],
+  "implementation_notes": {
+    "suggested_python_modules": [
+      "core/subject_acquisition/acquire_subject_profile.py",
+      "core/market_mapping.py",
+      "core/market_metrics.py",
+      "core/momentum_engine.py",
+      "core/one_hundred_four_mc.py",
+      "core/comp_selection.py",
+      "core/adjustment_engine.py",
+      "core/time_adjustment_engine.py",
+      "core/value_reconciliation.py",
+      "core/gpt_payload_builder.py",
+      "core/gpt_client.py",
+      "core/report_renderer.py",
+      "core/docx_exporter.py"
+    ],
+    "recommended_next_build_sequence": [
+      "repair subject PDF extraction with manual fallback retained",
+      "preserve full MLS master file and create hidden views",
+      "build market metrics and momentum engine",
+      "build 1004MC calculation and storage module",
+      "build physical adjustment engine",
+      "build time adjustment engine",
+      "build value reconciliation output",
+      "build GPT payload builder",
+      "rewrite GPT report prompt using this governance file",
+      "build clean .docx exporter",
+      "separate app preview from final report export"
+    ],
+    "important_warning": "Do not let GPT perform hidden math that the program should calculate. GPT may interpret, explain, and advise, but the local engine should own repeatable calculations."
+  }
+}
