@@ -1,0 +1,345 @@
+{
+  "mls_status": {
+    "source_field": "Mls Status",
+    "category": "Status",
+    "cpu_usage": "Closed/active/pending classification for comp pool and market counts.",
+    "required_for": [
+      "comp_engine",
+      "market_status"
+    ],
+    "human_definition": "Listing status such as active, pending, closed, expired."
+  },
+  "net_close_price": {
+    "source_field": "Net Close Price",
+    "category": "Sale",
+    "cpu_usage": "Preferred sold-comp pricing field for valuation math.",
+    "required_for": [
+      "pricing",
+      "comp_engine"
+    ],
+    "human_definition": "Close price minus concessions; best comp pricing field."
+  },
+  "close_price": {
+    "source_field": "Close Price",
+    "category": "Sale",
+    "cpu_usage": "Fallback sold-comp pricing field when Net Close Price is blank.",
+    "required_for": [
+      "pricing",
+      "comp_engine"
+    ],
+    "human_definition": "Final contract price before concessions."
+  },
+  "concessions_amount": {
+    "source_field": "Concessions Amount",
+    "category": "Sale",
+    "cpu_usage": "Optional pricing support for sale review and reconciliation.",
+    "required_for": [
+      "pricing_review"
+    ],
+    "human_definition": "Credits or concessions paid at closing."
+  },
+  "close_date": {
+    "source_field": "Close Date",
+    "category": "Sale",
+    "cpu_usage": "Sale timing reference for recency and later trend analysis.",
+    "required_for": [
+      "timing",
+      "future_trends"
+    ],
+    "human_definition": "Recorded closing date for sold properties."
+  },
+  "above_grade_sqft": {
+    "source_field": "Above Grade Finished Area",
+    "category": "Size",
+    "cpu_usage": "Primary square-foot filter for comparable selection.",
+    "required_for": [
+      "comp_engine",
+      "size_filter"
+    ],
+    "human_definition": "Main finished above-grade living area."
+  },
+  "below_grade_finished_sqft": {
+    "source_field": "Below Grade Finished Area",
+    "category": "Basement",
+    "cpu_usage": "Finished basement size for later basement adjustment logic.",
+    "required_for": [
+      "future_adjustments"
+    ],
+    "human_definition": "Finished square footage below grade."
+  },
+  "below_grade_unfinished_sqft": {
+    "source_field": "Below Grade Unfinished Area",
+    "category": "Basement",
+    "cpu_usage": "Unfinished basement size for later basement adjustment logic.",
+    "required_for": [
+      "future_adjustments"
+    ],
+    "human_definition": "Unfinished square footage below grade."
+  },
+  "building_area_total": {
+    "source_field": "Building Area Total",
+    "category": "Size",
+    "cpu_usage": "Reference support field when validating total area makeup.",
+    "required_for": [
+      "validation"
+    ],
+    "human_definition": "Overall building area, finished and unfinished as reported."
+  },
+  "beds": {
+    "source_field": "Bedrooms Total",
+    "category": "Layout",
+    "cpu_usage": "Comp similarity filter and ranking input.",
+    "required_for": [
+      "comp_engine",
+      "ranking"
+    ],
+    "human_definition": "Total number of bedrooms."
+  },
+  "baths": {
+    "source_field": "Bathrooms Total Integer",
+    "category": "Layout",
+    "cpu_usage": "Comp similarity filter and ranking input.",
+    "required_for": [
+      "comp_engine",
+      "ranking"
+    ],
+    "human_definition": "Total full and partial bathroom count as reported."
+  },
+  "year_built": {
+    "source_field": "Year Built",
+    "category": "Age",
+    "cpu_usage": "Age comparison and ranking input.",
+    "required_for": [
+      "comp_engine",
+      "ranking"
+    ],
+    "human_definition": "Original year the home was constructed."
+  },
+  "days_in_mls": {
+    "source_field": "Days In MLS",
+    "category": "Timing",
+    "cpu_usage": "Market-time review and later momentum analysis.",
+    "required_for": [
+      "market_timing",
+      "future_trends"
+    ],
+    "human_definition": "Number of days the listing spent on MLS."
+  },
+  "listing_contract_date": {
+    "source_field": "Listing Contract Date",
+    "category": "Timing",
+    "cpu_usage": "List timing reference for absorption and market review.",
+    "required_for": [
+      "market_timing"
+    ],
+    "human_definition": "Date the listing went active under contract."
+  },
+  "purchase_contract_date": {
+    "source_field": "Purchase Contract Date",
+    "category": "Contract",
+    "cpu_usage": "Pending timing reference for later market timing analysis.",
+    "required_for": [
+      "market_timing"
+    ],
+    "human_definition": "Date the property went under contract."
+  },
+  "list_price": {
+    "source_field": "List Price",
+    "category": "Pricing",
+    "cpu_usage": "Reference pricing field for active and pending review.",
+    "required_for": [
+      "market_review"
+    ],
+    "human_definition": "Current or original asking price depending on row stage."
+  },
+  "original_list_price": {
+    "source_field": "Original List Price",
+    "category": "Pricing",
+    "cpu_usage": "Support field for ratio and pricing history review.",
+    "required_for": [
+      "market_review"
+    ],
+    "human_definition": "First list price when property entered market."
+  },
+  "property_type": {
+    "source_field": "Property Type",
+    "category": "Classification",
+    "cpu_usage": "Broad property-class filter for comp qualification.",
+    "required_for": [
+      "comp_engine"
+    ],
+    "human_definition": "Broad property category such as residential."
+  },
+  "property_subtype": {
+    "source_field": "Property Sub Type",
+    "category": "Classification",
+    "cpu_usage": "Subtype filter for comp qualification.",
+    "required_for": [
+      "comp_engine"
+    ],
+    "human_definition": "Single-family, condo, townhome, etc."
+  },
+  "levels": {
+    "source_field": "Levels",
+    "category": "Layout",
+    "cpu_usage": "Story-style comparison support, especially ranch vs two-story review.",
+    "required_for": [
+      "future_adjustments",
+      "ranking"
+    ],
+    "human_definition": "One-story, two-story, tri-level, etc."
+  },
+  "living_area": {
+    "source_field": "Living Area",
+    "category": "Size",
+    "cpu_usage": "Support validation field when reviewing reported livable area.",
+    "required_for": [
+      "validation"
+    ],
+    "human_definition": "Reported livable finished area."
+  },
+  "garage_spaces": {
+    "source_field": "Garage Spaces",
+    "category": "Parking",
+    "cpu_usage": "Future adjustment and ranking support for parking utility.",
+    "required_for": [
+      "future_adjustments",
+      "ranking"
+    ],
+    "human_definition": "Number of enclosed garage spaces."
+  },
+  "lot_size_sqft": {
+    "source_field": "Lot Size Square Feet",
+    "category": "Site",
+    "cpu_usage": "Lot-size comparison and later adjustment support.",
+    "required_for": [
+      "future_adjustments",
+      "ranking"
+    ],
+    "human_definition": "Lot size measured in square feet."
+  },
+  "lot_size_acres": {
+    "source_field": "Lot Size Acres",
+    "category": "Site",
+    "cpu_usage": "Backup lot-size support when acreage is more useful than SF.",
+    "required_for": [
+      "future_adjustments"
+    ],
+    "human_definition": "Lot size measured in acres."
+  },
+  "lot_features": {
+    "source_field": "Lot Features",
+    "category": "Site",
+    "cpu_usage": "Narrative and later adjustment support for lot characteristics.",
+    "required_for": [
+      "future_adjustments",
+      "narrative"
+    ],
+    "human_definition": "Corner lot, cul-de-sac, landscaped, etc."
+  },
+  "architectural_style": {
+    "source_field": "Architectural Style",
+    "category": "Design",
+    "cpu_usage": "Style comparison support for ranch/traditional/contemporary review.",
+    "required_for": [
+      "future_adjustments",
+      "ranking"
+    ],
+    "human_definition": "Style description such as ranch, traditional, contemporary."
+  },
+  "property_condition": {
+    "source_field": "Property Condition",
+    "category": "Condition",
+    "cpu_usage": "Future condition-based adjustment support.",
+    "required_for": [
+      "future_adjustments"
+    ],
+    "human_definition": "General condition such as updated or fixer."
+  },
+  "public_remarks": {
+    "source_field": "Public Remarks",
+    "category": "Remarks",
+    "cpu_usage": "Narrative support and future GPT remarks interpretation.",
+    "required_for": [
+      "narrative",
+      "gpt_review"
+    ],
+    "human_definition": "Marketing comments visible to buyers/public."
+  },
+  "private_remarks": {
+    "source_field": "Private Remarks",
+    "category": "Remarks",
+    "cpu_usage": "Private-agent commentary for future GPT review.",
+    "required_for": [
+      "gpt_review"
+    ],
+    "human_definition": "Broker-only notes not shown to the public."
+  },
+  "subdivision_name": {
+    "source_field": "Subdivision Name",
+    "category": "Location",
+    "cpu_usage": "Subdivision/neighborhood grouping and future amenity narrative support.",
+    "required_for": [
+      "ranking",
+      "narrative"
+    ],
+    "human_definition": "Neighborhood or subdivision name."
+  },
+  "street_number": {
+    "source_field": "Street Number Numeric",
+    "category": "Address",
+    "cpu_usage": "Address identity and readable comp presentation.",
+    "required_for": [
+      "display",
+      "identity"
+    ],
+    "human_definition": "Street number in numeric format for sorting/filtering."
+  },
+  "street_name": {
+    "source_field": "Street Name",
+    "category": "Address",
+    "cpu_usage": "Address identity and readable comp presentation.",
+    "required_for": [
+      "display",
+      "identity"
+    ],
+    "human_definition": "Primary street name."
+  },
+  "street_dir_prefix": {
+    "source_field": "Street Dir Prefix",
+    "category": "Address",
+    "cpu_usage": "Address assembly support.",
+    "required_for": [
+      "display"
+    ],
+    "human_definition": "N, S, E, W before street name."
+  },
+  "street_dir_suffix": {
+    "source_field": "Street Dir Suffix",
+    "category": "Address",
+    "cpu_usage": "Address assembly support.",
+    "required_for": [
+      "display"
+    ],
+    "human_definition": "Directional suffix after street name."
+  },
+  "street_suffix": {
+    "source_field": "Street Suffix",
+    "category": "Address",
+    "cpu_usage": "Address assembly support.",
+    "required_for": [
+      "display"
+    ],
+    "human_definition": "Street type such as St, Ave, Rd, Cir."
+  },
+  "postal_code": {
+    "source_field": "Postal Code",
+    "category": "Location",
+    "cpu_usage": "Location support and display reference.",
+    "required_for": [
+      "display",
+      "identity"
+    ],
+    "human_definition": "Property ZIP/postal code."
+  }
+}
