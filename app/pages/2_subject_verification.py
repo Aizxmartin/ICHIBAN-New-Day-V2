@@ -126,6 +126,8 @@ with right:
     real_avm = st.number_input("RealAVM", min_value=0, step=1000, value=int(profile.get("real_avm") or 0))
     real_avm_low = st.number_input("RealAVM Range Low", min_value=0, step=1000, value=int(profile.get("real_avm_range_low") or 0))
     real_avm_high = st.number_input("RealAVM Range High", min_value=0, step=1000, value=int(profile.get("real_avm_range_high") or 0))
+    zillow_estimate = st.number_input("Zillow Estimate / Zestimate", min_value=0, step=1000, value=int(profile.get("zillow_estimate") or 0))
+    redfin_estimate = st.number_input("Redfin Estimate", min_value=0, step=1000, value=int(profile.get("redfin_estimate") or 0))
     basement_sqft = st.number_input("Basement SqFt", min_value=0, step=1, value=int(profile.get("basement_sqft") or 0))
     finished_basement_sqft = st.number_input(
         "Finished Basement SqFt", min_value=0, step=1, value=int(profile.get("finished_basement_sqft") or 0)
@@ -143,6 +145,8 @@ if st.button("Apply Minimal Manual Recovery"):
         "real_avm": None if real_avm == 0 else real_avm,
         "real_avm_range_low": None if real_avm_low == 0 else real_avm_low,
         "real_avm_range_high": None if real_avm_high == 0 else real_avm_high,
+        "zillow_estimate": None if zillow_estimate == 0 else zillow_estimate,
+        "redfin_estimate": None if redfin_estimate == 0 else redfin_estimate,
         "basement_sqft": None if basement_sqft == 0 else basement_sqft,
         "finished_basement_sqft": None if finished_basement_sqft == 0 else finished_basement_sqft,
     }
