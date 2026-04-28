@@ -1,9 +1,45 @@
+# Python cache / compiled files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets / environment
 .env
 .streamlit/secrets.toml
 *.key
 *.pem
-venv/
+
+# ICHIBAN generated data
+data/
+
+# Uploaded test documents / private property files
+*.pdf
+*.PDF
+
+# Patch zip files and temporary patch folders
+*.zip
+ichiban_*_patch/
+ichiban_*_patch*/
+ichiban_pdf_diagnostics_starter/
+ichiban_realist_parser_layer/
+ichiban_parser_patch_avm_1004mc/
+ichiban_1004mc_coordinate_parser_patch/
+ichiban_1004mc_streamlit_handoff_patch/
+
+# Local diagnostic output / scratch files
+valuation_engine_output*.json
+valuation_input_package*.json
+verified_subject*.json
+verified_1004mc*.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

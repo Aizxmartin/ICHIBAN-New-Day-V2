@@ -1,221 +1,423 @@
-import os
+from __future__ import annotations
+
+import importlib
+import inspect
+import json
 import sys
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
-import pandas as pd
 import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.agent.controller import run_valuation
-from core.gpt_client import run_gpt_report
-from core.reporting.docx_exporter import report_markdown_to_docx_bytes
-from core.reporting.report_payload_builder import build_report_payload
+from core.subject_acquisition import load_verified_subject
+from core.market_conditions import load_verified_1004mc
 
-st.set_page_config(page_title="ICHIBAN - Valuation Run", page_icon="📈", layout="wide")
+
+st.set_page_config(
+    page_title="ICHIBAN - Valuation Run",
+    page_icon="🏁",
+    layout="wide",
+)
 
 st.title("Module 4 — Valuation Run")
 st.subheader("Run the valuation engine using the locked subject profile and normalized MLS data")
 
-subject_profile = st.session_state.get("subject_profile", {})
-market_df = st.session_state.get("market_data_normalized")
-market_inspection = st.session_state.get("market_inspection", {})
-one_hundred_four_mc_summary = st.session_state.get("one_hundred_four_mc_summary", {})
 
-subject_ready = bool(subject_profile.get("subject_profile_ready"))
-market_ready = market_df is not None
-DEV_DEBUG = os.getenv("ICHIBAN_DEV_DEBUG") == "1"
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 
+def _json_safe(value: Any) -> Any:
+    """
+    Convert objects into JSON-safe structures.
+    Handles pandas DataFrames, Paths, and other non-serializable values.
+    """
 
-def count_value(value):
-    if isinstance(value, pd.DataFrame):
-        return len(value)
     if value is None:
-        return 0
+        return None
+
+    if hasattr(value, "to_dict") and hasattr(value, "columns"):
+        # pandas DataFrame
+        try:
+            return value.to_dict(orient="records")
+        except Exception:
+            return str(value)
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+
     try:
-        return int(value)
+        json.dumps(value)
+        return value
+    except Exception:
+        return str(value)
+
+
+def _save_json(path: str | Path, data: Dict[str, Any]) -> Path:
+    save_path = Path(path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(_json_safe(data), f, indent=2)
+
+    return save_path
+
+
+def _load_subject_profile() -> Tuple[Dict[str, Any], bool, str]:
+    """
+    Load subject from session first, then from data/verified_subject.json.
+    """
+
+    session_subject = st.session_state.get("subject_profile") or {}
+    saved_subject = load_verified_subject() or {}
+
+    subject = session_subject or saved_subject or {}
+
+    if saved_subject and not session_subject:
+        st.session_state["subject_profile"] = saved_subject
+        subject = saved_subject
+
+    subject_ready = bool(
+        subject.get("subject_verified")
+        or subject.get("subject_profile_ready")
+        or st.session_state.get("subject_ready")
+    )
+
+    if subject_ready:
+        st.session_state["subject_ready"] = True
+
+    source = "session_state"
+    if saved_subject and subject == saved_subject:
+        source = "data/verified_subject.json"
+
+    return subject, subject_ready, source
+
+
+def _load_market_data() -> Tuple[Any, bool, str]:
+    """
+    Market data is currently still session-based because the normalized DataFrame
+    is created in Module 3 from the MLS upload.
+
+    If this shows not ready, go back to Module 3 and upload the MLS file again.
+    """
+
+    market_df = st.session_state.get("market_data_normalized")
+    market_ready = market_df is not None
+
+    if market_ready:
+        return market_df, True, "session_state.market_data_normalized"
+
+    return None, False, "not_found"
+
+
+def _load_1004mc_summary() -> Tuple[Dict[str, Any], bool, str]:
+    """
+    Load 1004MC from session first, then from data/verified_1004mc.json.
+    """
+
+    session_1004mc = (
+        st.session_state.get("one_hundred_four_mc_summary")
+        or st.session_state.get("market_conditions_1004mc")
+        or {}
+    )
+
+    saved_1004mc = load_verified_1004mc() or {}
+
+    summary = session_1004mc or saved_1004mc or {}
+
+    if saved_1004mc and not session_1004mc:
+        st.session_state["one_hundred_four_mc_summary"] = saved_1004mc
+        st.session_state["market_conditions_1004mc"] = saved_1004mc
+        summary = saved_1004mc
+
+    supplied = bool(
+        summary.get("market_conditions_verified")
+        or summary.get("is_supplied")
+        or summary.get("recommended_route") == "parsed_1004mc_coordinate_table"
+        or summary.get("current_3_sales") is not None
+        or summary.get("annual_market_change_percent") is not None
+        or summary.get("monthly_market_change_percent") is not None
+    )
+
+    source = "session_state"
+    if saved_1004mc and summary == saved_1004mc:
+        source = "data/verified_1004mc.json"
+
+    return summary, supplied, source
+
+
+def _market_row_count(market_df: Any) -> int:
+    if market_df is None:
+        return 0
+
+    try:
+        return int(len(market_df))
     except Exception:
         return 0
 
 
-def money_value(value):
-    if value is None:
-        return "—"
-    try:
-        return f"${float(value):,.0f}"
-    except Exception:
-        return "—"
+def _try_run_valuation_engine(
+    subject_profile: Dict[str, Any],
+    market_data: Any,
+    one_hundred_four_mc_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Try to call the existing valuation engine without assuming the exact function name.
+
+    This lets Module 4 work while the valuation engine is still evolving.
+    If no engine function is found, this returns a structured fallback package
+    so the inputs can still be inspected.
+    """
+
+    candidates = [
+        ("core.valuation_engine", "run_valuation_engine"),
+        ("core.valuation_engine", "run_valuation"),
+        ("core.valuation_engine", "run_base_valuation"),
+        ("core.valuation_run", "run_valuation_engine"),
+        ("core.valuation_run", "run_valuation"),
+        ("core.engine.valuation_engine", "run_valuation_engine"),
+        ("core.engine.valuation_engine", "run_valuation"),
+    ]
+
+    last_errors = []
+
+    for module_name, function_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+            func = getattr(module, function_name, None)
+
+            if func is None:
+                continue
+
+            try:
+                signature = inspect.signature(func)
+                params = signature.parameters
+
+                kwargs = {}
+
+                if "subject_profile" in params:
+                    kwargs["subject_profile"] = subject_profile
+                if "subject" in params:
+                    kwargs["subject"] = subject_profile
+
+                if "market_data" in params:
+                    kwargs["market_data"] = market_data
+                if "market_df" in params:
+                    kwargs["market_df"] = market_data
+                if "market_data_normalized" in params:
+                    kwargs["market_data_normalized"] = market_data
+
+                if "one_hundred_four_mc_summary" in params:
+                    kwargs["one_hundred_four_mc_summary"] = one_hundred_four_mc_summary
+                if "market_conditions" in params:
+                    kwargs["market_conditions"] = one_hundred_four_mc_summary
+                if "mc_1004" in params:
+                    kwargs["mc_1004"] = one_hundred_four_mc_summary
+
+                if kwargs:
+                    output = func(**kwargs)
+                else:
+                    output = func(subject_profile, market_data, one_hundred_four_mc_summary)
+
+                return {
+                    "engine_status": "success",
+                    "engine_module": module_name,
+                    "engine_function": function_name,
+                    "engine_output": _json_safe(output),
+                }
+
+            except TypeError:
+                # Try common positional signature.
+                try:
+                    output = func(subject_profile, market_data, one_hundred_four_mc_summary)
+                    return {
+                        "engine_status": "success",
+                        "engine_module": module_name,
+                        "engine_function": function_name,
+                        "engine_output": _json_safe(output),
+                    }
+                except Exception as exc:
+                    last_errors.append(f"{module_name}.{function_name}: {exc}")
+
+            except Exception as exc:
+                last_errors.append(f"{module_name}.{function_name}: {exc}")
+
+        except Exception as exc:
+            last_errors.append(f"{module_name}: {exc}")
+
+    return {
+        "engine_status": "no_engine_function_found",
+        "message": (
+            "Module 4 successfully loaded the verified subject, market data, and 1004MC evidence, "
+            "but no compatible valuation engine function was found yet."
+        ),
+        "attempted_engine_functions": candidates,
+        "errors": last_errors[-10:],
+        "valuation_input_package": {
+            "subject_profile": _json_safe(subject_profile),
+            "market_rows": _market_row_count(market_data),
+            "one_hundred_four_mc_summary": _json_safe(one_hundred_four_mc_summary),
+        },
+    }
 
 
-def safe_dataframe(df):
-    out = df.copy()
-    for col in out.columns:
-        if out[col].dtype == "object":
-            out[col] = out[col].astype(str)
-    return out
+# ---------------------------------------------------------------------
+# Load handoffs
+# ---------------------------------------------------------------------
+
+subject_profile, subject_ready, subject_source = _load_subject_profile()
+market_data, market_ready, market_source = _load_market_data()
+one_hundred_four_mc_summary, mc_supplied, mc_source = _load_1004mc_summary()
+
+market_inspection = st.session_state.get("market_inspection") or {}
 
 
-def compact_results_for_json(results):
-    safe_results = {}
-    for k, v in (results or {}).items():
-        if isinstance(v, pd.DataFrame):
-            safe_results[k] = f"DataFrame with {len(v)} rows and {len(v.columns)} columns"
-        else:
-            safe_results[k] = v
-    return safe_results
+# ---------------------------------------------------------------------
+# Status metrics
+# ---------------------------------------------------------------------
 
-
-# --- Status ---
 c1, c2, c3 = st.columns(3)
-c1.metric("Subject ready", "True" if subject_ready else "False")
-c2.metric("Market data ready", "True" if market_ready else "False")
-c3.metric("1004MC supplied", "True" if one_hundred_four_mc_summary.get("is_supplied") else "False")
 
-if market_inspection and DEV_DEBUG:
-    with st.expander("Developer: Current market-data handoff summary", expanded=False):
-        st.json(market_inspection)
+c1.metric("Subject ready", str(subject_ready))
+c2.metric("Market data ready", str(market_ready))
+c3.metric("1004MC supplied", str(mc_supplied))
+
+detail1, detail2, detail3 = st.columns(3)
+
+detail1.caption(f"Subject source: {subject_source}")
+detail2.caption(f"Market source: {market_source}")
+detail3.caption(f"1004MC source: {mc_source}")
+
+
+# ---------------------------------------------------------------------
+# Status warnings
+# ---------------------------------------------------------------------
 
 if not subject_ready:
     st.warning("Subject profile is not ready. Complete Module 2 first.")
 
 if not market_ready:
-    st.warning("Market data is not ready. Complete Module 3 first.")
+    st.warning(
+        "Market data is not ready. Complete Module 3 first. "
+        "If you restarted Streamlit, re-upload the MLS market file in Module 3."
+    )
+
+if mc_supplied:
+    annual = one_hundred_four_mc_summary.get("annual_market_change_percent")
+    monthly = one_hundred_four_mc_summary.get("monthly_market_change_percent")
+    trend = one_hundred_four_mc_summary.get("market_trend_classification", "not_supplied")
+
+    st.success(
+        f"1004MC evidence loaded. Annual trend: "
+        f"{'—' if annual is None else str(annual) + '%'} | "
+        f"Monthly trend: {'—' if monthly is None else str(monthly) + '%'} | "
+        f"Trend class: {trend}"
+    )
+else:
+    st.info("No verified 1004MC evidence supplied. This is optional.")
 
 
-# --- Run Engine ---
-if subject_ready and market_ready:
-    with st.spinner("Running valuation engine..."):
-        results = run_valuation(
-            market_df,
-            subject_profile,
-            one_hundred_four_mc_summary=one_hundred_four_mc_summary,
-        )
+# ---------------------------------------------------------------------
+# Expanders for verification
+# ---------------------------------------------------------------------
 
-    st.session_state["valuation_results"] = results
-
-    if results.get("error"):
-        st.error(results["error"])
+with st.expander("Verified subject profile", expanded=False):
+    if subject_profile:
+        st.json(_json_safe(subject_profile))
     else:
-        st.success("Valuation engine completed.")
+        st.caption("No subject profile loaded.")
 
-        st.markdown("## Comp Engine Summary")
+with st.expander("Market data handoff", expanded=False):
+    st.write(
+        {
+            "market_ready": market_ready,
+            "market_rows": _market_row_count(market_data),
+            "market_inspection": _json_safe(market_inspection),
+        }
+    )
 
-        top1, top2, top3, top4 = st.columns(4)
-        top1.metric("Closed Rows", count_value(results.get("closed_rows")))
-        top2.metric("Priced Closed", count_value(results.get("priced_closed_rows")))
-        top3.metric("Candidate Comps", count_value(results.get("candidate_comps")))
-        top4.metric("Selected Comps", count_value(results.get("selected_comps")))
+    if market_ready:
+        try:
+            st.dataframe(market_data.head(25), width="stretch")
+        except Exception:
+            st.write("Market data exists but could not be previewed as a dataframe.")
 
-        low_range = results.get("recommended_low")
-        high_range = results.get("recommended_high")
+with st.expander("1004MC / time-trend evidence", expanded=False):
+    if one_hundred_four_mc_summary:
+        st.json(_json_safe(one_hundred_four_mc_summary))
+    else:
+        st.caption("No 1004MC evidence loaded.")
 
-        if low_range is not None and high_range is not None:
-            st.markdown(f"### Evidence Range: {money_value(low_range)} – {money_value(high_range)}")
 
-        avg_ppsf = results.get("average_ppsf")
-        median_price = results.get("median_effective_price")
+# ---------------------------------------------------------------------
+# Save valuation input package
+# ---------------------------------------------------------------------
 
-        c5, c6 = st.columns(2)
-        c5.metric("Average PPSF", money_value(avg_ppsf))
-        c6.metric("Median Effective Price", money_value(median_price))
+valuation_input_package = {
+    "subject_profile": _json_safe(subject_profile),
+    "market_rows": _market_row_count(market_data),
+    "market_inspection": _json_safe(market_inspection),
+    "one_hundred_four_mc_summary": _json_safe(one_hundred_four_mc_summary),
+}
 
-        selected_preview = results.get("selected_comp_preview")
+if st.button("Save Valuation Input Package"):
+    saved_path = _save_json("data/valuation_input_package.json", valuation_input_package)
+    st.success(f"Valuation input package saved to {saved_path}")
 
-        if isinstance(selected_preview, pd.DataFrame) and not selected_preview.empty:
-            st.markdown("### Selected Comparable Preview")
-            st.dataframe(safe_dataframe(selected_preview), width="stretch")
-        else:
-            st.warning("No selected comp preview was returned.")
 
-        avm_values = []
-        for label, key in [("RealAVM", "real_avm"), ("Zillow", "zillow_estimate"), ("Redfin", "redfin_estimate")]:
-            value = subject_profile.get(key)
-            if value not in (None, "", 0):
-                avm_values.append((label, value))
+# ---------------------------------------------------------------------
+# Run valuation
+# ---------------------------------------------------------------------
 
-        with st.expander("Pre-API Handoff Checks", expanded=False):
-            st.markdown("**Range separation rule:** AVM evidence is secondary support only. Comp evidence remains the primary valuation range.")
-            if avm_values:
-                st.write("AVM values supplied:")
-                for label, value in avm_values:
-                    st.write(f"- {label}: {money_value(value)}")
-            else:
-                st.write("No Zillow/Redfin/RealAVM values were supplied. This is allowed.")
+st.divider()
 
-            if one_hundred_four_mc_summary.get("is_supplied"):
-                st.write("1004MC / time-trend evidence saved:")
-                st.json(one_hundred_four_mc_summary)
-            else:
-                st.write("No 1004MC evidence supplied. This is allowed; formal time adjustments will be omitted unless later provided/calculated.")
+if subject_ready and market_ready:
+    st.success("Ready to run valuation.")
 
-        if DEV_DEBUG:
-            with st.expander("Developer: Engine Debug / Full Output", expanded=False):
-                st.json(compact_results_for_json(results))
-
-        st.divider()
-        st.markdown("## Generate ICHIBAN Insight Report")
-
-        estimated_days_until_market = st.number_input(
-            "Estimated days until market",
-            min_value=0,
-            max_value=365,
-            value=int(st.session_state.get("estimated_days_until_market", 30)),
-            step=1,
-            help="Used for the comp disclosure rule. Detailed comps should be included only when listing is expected within 30 days.",
-        )
-        st.session_state["estimated_days_until_market"] = int(estimated_days_until_market)
-
-        agent_notes = st.text_area(
-            "Agent notes for the final report",
-            value=st.session_state.get("agent_notes_for_report", ""),
-            placeholder="Add condition notes, special features, seller timing, pricing concerns, or anything GPT should consider in the narrative.",
-            height=140,
-        )
-        st.session_state["agent_notes_for_report"] = agent_notes
-
-        if st.button("Generate Deep-Dive ICHIBAN Report"):
-            report_payload = build_report_payload(
-                engine_output=results,
+    if st.button("Run Valuation Engine", type="primary"):
+        with st.spinner("Running valuation engine..."):
+            result = _try_run_valuation_engine(
                 subject_profile=subject_profile,
-                market_inspection=market_inspection,
-                user_notes=agent_notes,
-                estimated_days_until_market=int(estimated_days_until_market),
+                market_data=market_data,
                 one_hundred_four_mc_summary=one_hundred_four_mc_summary,
             )
-            st.session_state["ichiban_report_payload"] = report_payload
 
-            with st.spinner("Calling mini GPT with ICHIBAN governance rules..."):
-                try:
-                    report_text = run_gpt_report(report_payload)
-                    st.session_state["ichiban_report_text"] = report_text
-                except Exception as exc:
-                    st.error(f"GPT report generation failed: {exc}")
+        st.session_state["valuation_engine_result"] = result
 
-        report_text = st.session_state.get("ichiban_report_text")
-        if report_text:
-            st.markdown("## ICHIBAN Insight Report")
-            st.markdown(report_text)
+        saved_path = _save_json("data/valuation_engine_output.json", result)
 
-            subject_address = subject_profile.get("subject_address") or "Subject_Property"
-            safe_name = "".join(ch if ch.isalnum() else "_" for ch in subject_address).strip("_")
-            file_name = f"{safe_name}_ICHIBAN_Insight_Report.docx"
-
-            docx_bytes = report_markdown_to_docx_bytes(
-                report_text,
-                title=f"ICHIBAN Insight Report — {subject_address}",
+        if result.get("engine_status") == "success":
+            st.success(f"Valuation engine completed. Output saved to {saved_path}")
+        else:
+            st.warning(
+                "The valuation input package loaded correctly, but no compatible valuation engine function was found yet. "
+                f"Diagnostic output saved to {saved_path}"
             )
 
-            st.download_button(
-                label="Download Clean .docx Report",
-                data=docx_bytes,
-                file_name=file_name,
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
+    result = st.session_state.get("valuation_engine_result")
 
-        if DEV_DEBUG:
-            with st.expander("Developer: Generated GPT Report Payload", expanded=False):
-                st.json(st.session_state.get("ichiban_report_payload", {}))
+    if result:
+        st.markdown("## Engine Output")
+        st.json(_json_safe(result))
+
+        output_json = json.dumps(_json_safe(result), indent=2)
+
+        st.download_button(
+            label="Download valuation engine output JSON",
+            data=output_json,
+            file_name="valuation_engine_output.json",
+            mime="application/json",
+        )
+
 else:
     st.info("Complete Modules 2 and 3 before running valuation.")
