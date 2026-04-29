@@ -70,18 +70,34 @@ ADDITIONAL_1004MC_FIELDS = [
     ("median_sale_to_list_price_pct", "Sale/List %", "float", 0.01),
 ]
 
-WIDGET_TO_DATA_KEY = {}
+# These are base widget keys. The live Streamlit widget key appends a reset id.
+# This solves the "Clear 1004MC did not clear fields on screen" issue.
+BASE_WIDGET_TO_DATA_KEY: Dict[str, str] = {}
 
 for period_key, _period_label in PERIODS:
     for suffix, _label, _kind, _step in CORE_1004MC_FIELDS + ADDITIONAL_1004MC_FIELDS:
-        WIDGET_TO_DATA_KEY[f"{period_key}_{suffix}_input"] = f"{period_key}_{suffix}"
+        BASE_WIDGET_TO_DATA_KEY[f"{period_key}_{suffix}_input"] = f"{period_key}_{suffix}"
 
-WIDGET_TO_DATA_KEY.update(
+BASE_WIDGET_TO_DATA_KEY.update(
     {
         "annual_market_change_percent_input": "annual_market_change_percent",
         "monthly_market_change_percent_input": "monthly_market_change_percent",
     }
 )
+
+BASE_SPECIAL_1004MC_WIDGET_KEYS = [
+    "market_trend_classification_input",
+    "manual_1004mc_note_input",
+    "auto_calc_1004mc_trend_checkbox",
+]
+
+
+# ---------------------------------------------------------------------
+# 1004MC reset state
+# ---------------------------------------------------------------------
+
+if "1004mc_widget_reset_id" not in st.session_state:
+    st.session_state["1004mc_widget_reset_id"] = 0
 
 
 # ---------------------------------------------------------------------
@@ -114,8 +130,31 @@ def _none_if_zero_float(value: float) -> Optional[float]:
     return None if value == 0 else value
 
 
-def _widget_value_to_data_value(widget_key: str, value: Any) -> Any:
-    if "rate" in widget_key or "supply" in widget_key or "percent" in widget_key or "pct" in widget_key:
+def _widget_key(base_key: str) -> str:
+    """
+    Return the current live Streamlit widget key.
+
+    Changing 1004mc_widget_reset_id forces Streamlit to construct brand-new
+    widgets, which reliably clears old values from the visible screen.
+    """
+
+    return f"{base_key}_{st.session_state.get('1004mc_widget_reset_id', 0)}"
+
+
+def _data_key_to_widget_key(data_key: str) -> str:
+    for base_key, mapped_data_key in BASE_WIDGET_TO_DATA_KEY.items():
+        if mapped_data_key == data_key:
+            return _widget_key(base_key)
+    return _widget_key(data_key)
+
+
+def _widget_value_to_data_value(base_widget_key: str, value: Any) -> Any:
+    if (
+        "rate" in base_widget_key
+        or "supply" in base_widget_key
+        or "percent" in base_widget_key
+        or "pct" in base_widget_key
+    ):
         value = _safe_float(value)
         return _none_if_zero_float(value)
 
@@ -125,54 +164,73 @@ def _widget_value_to_data_value(widget_key: str, value: Any) -> Any:
 
 def _clear_1004mc_widget_state() -> None:
     """
-    Clear 1004MC widgets so old zero values or prior parses do not remain stuck.
-    This function is called before the number_input widgets are created.
+    Clear 1004MC widgets, parsed values, saved handoff values, and stale valuation output.
+
+    Important:
+    Streamlit file uploaders and number inputs can keep visible values even after
+    st.session_state.pop() if the same widget key is reused. The reliable reset is
+    to remove known state AND increment 1004mc_widget_reset_id before rerun.
     """
 
-    keys_to_clear = set(WIDGET_TO_DATA_KEY.keys())
-    keys_to_clear.update(
-        {
-            "market_trend_classification_input",
-            "manual_1004mc_note_input",
-            "auto_calc_1004mc_trend_checkbox",
-        }
-    )
+    exact_keys_to_clear = {
+        "market_conditions_1004mc",
+        "one_hundred_four_mc_summary",
+        "1004mc_pending_widget_load",
+        "valuation_engine_result",
+        "valuation_input_package",
+    }
 
-    for key in keys_to_clear:
-        st.session_state.pop(key, None)
+    base_prefixes_to_clear = set(BASE_WIDGET_TO_DATA_KEY.keys())
+    base_prefixes_to_clear.update(BASE_SPECIAL_1004MC_WIDGET_KEYS)
+    base_prefixes_to_clear.add("one_hundred_four_mc_file_uploader")
+
+    for key in list(st.session_state.keys()):
+        if key in exact_keys_to_clear:
+            st.session_state.pop(key, None)
+            continue
+
+        if any(key == prefix or key.startswith(f"{prefix}_") for prefix in base_prefixes_to_clear):
+            st.session_state.pop(key, None)
 
 
 def _load_1004mc_values_into_widget_state(data: Dict[str, Any], overwrite: bool = True) -> None:
     """
-    Push parsed/saved 1004MC values into Streamlit widget state.
+    Push parsed/saved 1004MC values into the current dynamic widget keys.
 
     This must be called BEFORE the widgets with these keys are instantiated.
-    Do not call this after the number_input widgets are already shown.
     """
 
-    for widget_key, data_key in WIDGET_TO_DATA_KEY.items():
-        if overwrite or widget_key not in st.session_state:
+    for base_widget_key, data_key in BASE_WIDGET_TO_DATA_KEY.items():
+        live_widget_key = _widget_key(base_widget_key)
+
+        if overwrite or live_widget_key not in st.session_state:
             value = data.get(data_key)
 
-            if "rate" in widget_key or "supply" in widget_key or "percent" in widget_key or "pct" in widget_key:
-                st.session_state[widget_key] = _safe_float(value)
+            if (
+                "rate" in base_widget_key
+                or "supply" in base_widget_key
+                or "percent" in base_widget_key
+                or "pct" in base_widget_key
+            ):
+                st.session_state[live_widget_key] = _safe_float(value)
             else:
-                st.session_state[widget_key] = _safe_int(value)
+                st.session_state[live_widget_key] = _safe_int(value)
 
     trend = data.get("market_trend_classification") or "not_supplied"
     if trend not in TREND_OPTIONS:
         trend = "not_supplied"
 
-    if overwrite or "market_trend_classification_input" not in st.session_state:
-        st.session_state["market_trend_classification_input"] = trend
+    trend_key = _widget_key("market_trend_classification_input")
+    if overwrite or trend_key not in st.session_state:
+        st.session_state[trend_key] = trend
 
-    if overwrite or "manual_1004mc_note_input" not in st.session_state:
-        st.session_state["manual_1004mc_note_input"] = (
-            data.get("manual_note") or data.get("trend_note") or ""
-        )
+    note_key = _widget_key("manual_1004mc_note_input")
+    if overwrite or note_key not in st.session_state:
+        st.session_state[note_key] = data.get("manual_note") or data.get("trend_note") or ""
 
-    if overwrite or "auto_calc_1004mc_trend_checkbox" not in st.session_state:
-        st.session_state["auto_calc_1004mc_trend_checkbox"] = True
+    auto_calc_key = _widget_key("auto_calc_1004mc_trend_checkbox")
+    if overwrite or auto_calc_key not in st.session_state:
+        st.session_state[auto_calc_key] = True
 
 
 def _calc_market_change_from_1004mc(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -215,9 +273,8 @@ def _calc_market_change_from_1004mc(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _build_module4_compatible_summary(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Module 4 currently expects one_hundred_four_mc_summary-style keys.
-    This function keeps backward compatibility while also preserving the richer
-    parser fields.
+    Module 4 expects one_hundred_four_mc_summary-style keys.
+    This function keeps backward compatibility while preserving the richer parser fields.
     """
 
     annual = data.get("annual_market_change_percent")
@@ -276,6 +333,9 @@ def _save_1004mc_to_session_and_disk(data: Dict[str, Any]) -> Path:
     st.session_state["market_conditions_1004mc"] = summary
     st.session_state["one_hundred_four_mc_summary"] = summary
 
+    # A new 1004MC handoff invalidates any prior valuation output.
+    st.session_state.pop("valuation_engine_result", None)
+
     return save_path
 
 
@@ -289,23 +349,26 @@ def _render_metric_value(value: Any, suffix: str = "") -> str:
 
 def _collect_1004mc_from_widgets(parsed_or_existing: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Collect current 1004MC widget values into structured data.
+    Collect current dynamic 1004MC widget values into structured data.
     """
 
     data = dict(parsed_or_existing)
     data["source"] = "1004mc"
 
-    for widget_key, data_key in WIDGET_TO_DATA_KEY.items():
+    for base_widget_key, data_key in BASE_WIDGET_TO_DATA_KEY.items():
+        live_widget_key = _widget_key(base_widget_key)
         data[data_key] = _widget_value_to_data_value(
-            widget_key,
-            st.session_state.get(widget_key),
+            base_widget_key,
+            st.session_state.get(live_widget_key),
         )
 
-    market_trend = st.session_state.get("market_trend_classification_input", "not_supplied")
+    trend_key = _widget_key("market_trend_classification_input")
+    market_trend = st.session_state.get(trend_key, "not_supplied")
     if market_trend not in TREND_OPTIONS:
         market_trend = "not_supplied"
 
-    manual_note = st.session_state.get("manual_1004mc_note_input", "") or ""
+    note_key = _widget_key("manual_1004mc_note_input")
+    manual_note = st.session_state.get(note_key, "") or ""
 
     data["market_trend_classification"] = market_trend
     data["manual_note"] = manual_note.strip()
@@ -340,6 +403,9 @@ if uploaded_file is not None:
             "normalized_columns": list(inspection.dataframe.columns),
         }
         st.session_state["market_data_normalized"] = inspection.dataframe
+
+        # A newly uploaded market file invalidates prior valuation output.
+        st.session_state.pop("valuation_engine_result", None)
 
         st.success("Market file loaded and normalized.")
 
@@ -416,6 +482,8 @@ if market_ready:
             st.info(message_text)
 
     with st.container(border=True):
+        uploader_key = _widget_key("one_hundred_four_mc_file_uploader")
+
         mc_file = st.file_uploader(
             "Upload 1004MC report or market-trend support file (optional)",
             type=["pdf"],
@@ -423,7 +491,7 @@ if market_ready:
                 "For best results, use the direct 1004MC report download/export. "
                 "Avoid Microsoft Print to PDF because it may produce an image-only file."
             ),
-            key="one_hundred_four_mc_file_uploader",
+            key=uploader_key,
         )
 
         col_parse, col_clear = st.columns([1, 1])
@@ -435,14 +503,15 @@ if market_ready:
             clear_clicked = st.button("Clear Verified 1004MC")
 
         if clear_clicked:
-            clear_verified_1004mc()
-            st.session_state.pop("market_conditions_1004mc", None)
-            st.session_state.pop("one_hundred_four_mc_summary", None)
-            st.session_state["1004mc_pending_widget_load"] = False
+            file_deleted = clear_verified_1004mc()
             _clear_1004mc_widget_state()
+            st.session_state["1004mc_widget_reset_id"] = st.session_state.get("1004mc_widget_reset_id", 0) + 1
             st.session_state["1004mc_message"] = {
                 "type": "success",
-                "text": "Verified 1004MC data cleared.",
+                "text": (
+                    "Verified 1004MC data cleared and screen fields reset. "
+                    + ("Saved JSON file was deleted." if file_deleted else "No saved JSON file was found.")
+                ),
             }
             st.rerun()
 
@@ -463,6 +532,7 @@ if market_ready:
             st.session_state["market_conditions_1004mc"] = parsed_result
             st.session_state["one_hundred_four_mc_summary"] = _build_module4_compatible_summary(parsed_result)
             st.session_state["1004mc_pending_widget_load"] = True
+            st.session_state.pop("valuation_engine_result", None)
 
             route = parsed_result.get("recommended_route")
             confidence = parsed_result.get("parser_confidence")
@@ -518,44 +588,46 @@ if market_ready:
                 st.markdown(f"#### {period_label}")
 
                 for suffix, label, kind, step in CORE_1004MC_FIELDS:
-                    widget_key = f"{period_key}_{suffix}_input"
+                    base_widget_key = f"{period_key}_{suffix}_input"
+                    live_widget_key = _widget_key(base_widget_key)
                     full_label = f"{period_label} {label}"
 
                     if kind == "float":
-                        period_widget_values[widget_key] = st.number_input(
+                        period_widget_values[live_widget_key] = st.number_input(
                             full_label,
                             min_value=0.0,
                             step=float(step),
                             format="%.2f",
-                            key=widget_key,
+                            key=live_widget_key,
                         )
                     else:
-                        period_widget_values[widget_key] = st.number_input(
+                        period_widget_values[live_widget_key] = st.number_input(
                             full_label,
                             min_value=0,
                             step=int(step),
-                            key=widget_key,
+                            key=live_widget_key,
                         )
 
                 with st.expander(f"{period_label} Additional Fields", expanded=False):
                     for suffix, label, kind, step in ADDITIONAL_1004MC_FIELDS:
-                        widget_key = f"{period_key}_{suffix}_input"
+                        base_widget_key = f"{period_key}_{suffix}_input"
+                        live_widget_key = _widget_key(base_widget_key)
                         full_label = f"{period_label} {label}"
 
                         if kind == "float":
-                            period_widget_values[widget_key] = st.number_input(
+                            period_widget_values[live_widget_key] = st.number_input(
                                 full_label,
                                 min_value=0.0,
                                 step=float(step),
                                 format="%.2f",
-                                key=widget_key,
+                                key=live_widget_key,
                             )
                         else:
-                            period_widget_values[widget_key] = st.number_input(
+                            period_widget_values[live_widget_key] = st.number_input(
                                 full_label,
                                 min_value=0,
                                 step=int(step),
-                                key=widget_key,
+                                key=live_widget_key,
                             )
 
         st.markdown("### Time-Trend Handoff")
@@ -567,7 +639,7 @@ if market_ready:
             step=0.1,
             format="%.2f",
             help="Use positive for increasing market and negative for declining market. Leave 0 if not supplied.",
-            key="annual_market_change_percent_input",
+            key=_widget_key("annual_market_change_percent_input"),
         )
 
         trend_col2.number_input(
@@ -575,21 +647,21 @@ if market_ready:
             step=0.1,
             format="%.2f",
             help="If annual is supplied and monthly is left at 0, ICHIBAN can derive annual ÷ 12.",
-            key="monthly_market_change_percent_input",
+            key=_widget_key("monthly_market_change_percent_input"),
         )
 
         trend_col3.selectbox(
             "Market trend classification",
             TREND_OPTIONS,
             help="Optional. Choose not_supplied if the 1004MC data is not available.",
-            key="market_trend_classification_input",
+            key=_widget_key("market_trend_classification_input"),
         )
 
         st.text_area(
             "1004MC / trend note for valuation handoff (optional)",
             height=80,
             placeholder="Example: 1004MC indicates stable pricing over the last 12 months; use only as secondary support.",
-            key="manual_1004mc_note_input",
+            key=_widget_key("manual_1004mc_note_input"),
         )
 
         st.checkbox(
@@ -598,19 +670,19 @@ if market_ready:
                 "Uses Prior 7–12 Months median close price compared to Current–3 Months median close price. "
                 "This is a support indicator only."
             ),
-            key="auto_calc_1004mc_trend_checkbox",
+            key=_widget_key("auto_calc_1004mc_trend_checkbox"),
         )
 
         if st.button("Save 1004MC / Time-Trend Handoff", type="primary"):
             verified_1004mc = _collect_1004mc_from_widgets(parsed_or_existing)
 
             annual_market_change_percent = _safe_float(
-                st.session_state.get("annual_market_change_percent_input")
+                st.session_state.get(_widget_key("annual_market_change_percent_input"))
             )
             monthly_market_change_percent = _safe_float(
-                st.session_state.get("monthly_market_change_percent_input")
+                st.session_state.get(_widget_key("monthly_market_change_percent_input"))
             )
-            auto_calc = bool(st.session_state.get("auto_calc_1004mc_trend_checkbox"))
+            auto_calc = bool(st.session_state.get(_widget_key("auto_calc_1004mc_trend_checkbox")))
 
             if (
                 auto_calc
