@@ -8,7 +8,14 @@ import re
 import pandas as pd
 
 
-ENGINE_VERSION = "pre_api_baseline_valuation_engine_v1"
+ENGINE_VERSION = "valuation_engine_v2b_subject_sqft_safety_pre_api"
+
+
+ADJUSTMENT_RATES = {
+    "above_grade_sqft": 40,
+    "finished_basement_sqft": 20,
+    "unfinished_basement_sqft": 5,
+}
 
 
 COLUMN_ALIASES = {
@@ -38,6 +45,12 @@ COLUMN_ALIASES = {
         "originallistprice",
         "original list price",
     ],
+    "original_list_price": [
+        "originallistprice",
+        "original list price",
+        "originalprice",
+        "original price",
+    ],
     "concessions": [
         "concessions",
         "sellerconcessions",
@@ -47,38 +60,61 @@ COLUMN_ALIASES = {
         "sellerpaidclosingcosts",
         "seller paid closing costs",
     ],
+
+    # MLS square-footage safety rule:
+    # Above Grade Finished Area is the only MLS field allowed to drive primary comp sizing.
+    # Do not substitute Living Area, Building Area Total, or generic SqFt for this field.
     "above_grade_sqft": [
+        "Above Grade Finished Area",
         "abovegradefinishedarea",
         "above grade finished area",
         "abovegradefinishedsqft",
         "above grade finished sqft",
-        "abovegradefinisheddarea",
-        "above grade",
-        "abovegradesqft",
-        "above grade sqft",
+        "above grade finished sf",
+    ],
+    "building_area_total": [
+        "Building Area Total",
         "buildingareatotal",
         "building area total",
+    ],
+    "living_area": [
+        "Living Area",
         "livingarea",
         "living area",
-        "sqft",
-        "squarefeet",
-        "square feet",
     ],
+
     "basement_sqft": [
         "belowgradearea",
         "below grade area",
+        "belowgradesqft",
+        "below grade sqft",
         "basementsqft",
         "basement sqft",
         "basement sf",
-        "belowgradesqft",
-        "below grade sqft",
+        "totalbasementsqft",
+        "total basement sqft",
+        "bldg sq ft basement",
     ],
     "finished_basement_sqft": [
+        "Below Grade Finished Area",
         "belowgradefinishedarea",
         "below grade finished area",
+        "belowgradefinishedsqft",
+        "below grade finished sqft",
         "finishedbasementsqft",
         "finished basement sqft",
         "finished basement sf",
+        "bldg sq ft finished basement",
+    ],
+    "unfinished_basement_sqft": [
+        "Below Grade Unfinished Area",
+        "belowgradeunfinishedarea",
+        "below grade unfinished area",
+        "belowgradeunfinishedsqft",
+        "below grade unfinished sqft",
+        "unfinishedbasementsqft",
+        "unfinished basement sqft",
+        "unfinished basement sf",
     ],
     "year_built": [
         "yearbuilt",
@@ -145,6 +181,59 @@ COLUMN_ALIASES = {
         "subdivisionname",
         "subdivision name",
     ],
+    "association_name": [
+        "associationname",
+        "association name",
+        "association",
+        "hoa name",
+        "hoa",
+    ],
+    "association_name_2": [
+        "associationname2",
+        "association name 2",
+        "association2name",
+        "association 2 name",
+        "hoa name 2",
+        "hoa2",
+    ],
+    "association_fee_total_annual": [
+        "associationfeetotalannual",
+        "association fee total annual",
+        "associationfeeannual",
+        "association fee annual",
+        "hoa annual fee",
+        "hoa fee annual",
+    ],
+    "property_subtype": [
+        "propertysubtype",
+        "property sub type",
+        "property subtype",
+        "propertytype",
+        "property type",
+        "structuretype",
+        "structure type",
+    ],
+    "levels": [
+        "Levels",
+        "levels",
+        "stories",
+        "story",
+        "architecturalstyle",
+        "architectural style",
+        "style",
+    ],
+    "public_remarks": [
+        "publicremarks",
+        "public remarks",
+        "remarks",
+        "marketing remarks",
+    ],
+    "broker_remarks": [
+        "brokerremarks",
+        "broker remarks",
+        "private remarks",
+        "private remarks - broker",
+    ],
 }
 
 
@@ -154,25 +243,27 @@ def run_valuation_engine(
     one_hundred_four_mc_summary: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    ICHIBAN INSIGHT baseline valuation engine.
+    ICHIBAN INSIGHT Valuation Engine v2B.
 
-    This is a pre-API deterministic starter engine. It is designed to prove that:
+    Purpose:
+    - Build selected comparable evidence from the uploaded MLS comp file.
+    - Apply deterministic adjustments.
+    - Produce the Selected Comparable Evidence Range.
+    - Produce the Online Estimated Value range from Zillow, Redfin, and RealAVM.
+    - Produce a limited Market Momentum section only when active/pending/sold data is present.
+    - Leave final seller-facing pricing posture and Market Entry Range to the GPT layer.
 
-        verified_subject.json
-        + normalized MLS market data
-        + verified_1004mc.json
-
-    can flow into a valuation package.
-
-    This is not yet the final proprietary adjustment engine. It creates a clean,
-    defensible baseline using closed comps, size filtering, PPSF support, AVM
-    support, and 1004MC trend evidence.
+    Key safety rule:
+    - Subject above-grade square footage must not be populated from Realist total-finished fields.
+      The engine first uses direct above-ground / above-grade fields, then may infer above-grade
+      from total finished minus finished basement, with a verification note.
     """
 
     one_hundred_four_mc_summary = one_hundred_four_mc_summary or {}
 
     warnings: List[str] = []
     notes: List[str] = []
+    data_verification_notes: List[str] = []
 
     df = _as_dataframe(market_data)
 
@@ -181,94 +272,113 @@ def run_valuation_engine(
             "engine_version": ENGINE_VERSION,
             "engine_status": "blocked",
             "reason": "Market data is empty or could not be converted to a DataFrame.",
-            "subject_summary": _subject_summary(subject_profile),
             "warnings": warnings,
         }
 
-    subject_summary = _subject_summary(subject_profile)
-
-    subject_above_grade = _to_number(
-        subject_profile.get("above_grade_sqft")
-        or subject_profile.get("building_sqft")
+    subject = _build_subject_features(
+        subject_profile=subject_profile,
+        warnings=warnings,
+        data_verification_notes=data_verification_notes,
     )
-
-    if not subject_above_grade:
-        warnings.append(
-            "Subject above-grade square footage is missing. Comp PPSF valuation will be weaker."
-        )
 
     column_map = _detect_columns(df)
 
     prepared = _prepare_market_dataframe(
         df=df,
         column_map=column_map,
-        subject_above_grade=subject_above_grade,
+        subject=subject,
         warnings=warnings,
+        notes=notes,
     )
 
+    all_prepared_df = prepared["all_prepared_df"]
     closed_df = prepared["closed_df"]
-    comp_df = prepared["comp_df"]
-    notes.extend(prepared["notes"])
+    comp_candidates_df = prepared["comp_candidates_df"]
 
-    if comp_df.empty:
+    if comp_candidates_df.empty:
         return {
             "engine_version": ENGINE_VERSION,
             "engine_status": "blocked",
             "reason": "No usable closed comparable sales were available after preparation.",
-            "subject_summary": subject_summary,
+            "subject_summary": subject,
             "column_map": column_map,
             "market_rows_loaded": int(len(df)),
+            "closed_rows_available": int(len(closed_df)),
             "warnings": warnings,
             "notes": notes,
+            "data_verification_notes": data_verification_notes,
         }
 
-    comp_stats = _calculate_comp_stats(
-        comp_df=comp_df,
-        subject_above_grade=subject_above_grade,
+    adjusted_df = _apply_adjustments_and_scoring(
+        comp_df=comp_candidates_df,
+        subject=subject,
         one_hundred_four_mc_summary=one_hundred_four_mc_summary,
-    )
-
-    avm_summary = _calculate_avm_summary(subject_profile)
-
-    recommended_range = _calculate_recommended_range(
-        comp_stats=comp_stats,
-        avm_summary=avm_summary,
         warnings=warnings,
+        notes=notes,
     )
 
-    market_conditions_summary = _summarize_1004mc(one_hundred_four_mc_summary)
+    selected_df = _select_best_comps(adjusted_df, notes)
 
-    comp_records = _build_comp_records(comp_df, column_map)
+    online_estimated_value = _calculate_online_estimated_value(subject_profile)
+
+    selected_comparable_evidence_range = _calculate_selected_comparable_evidence_range(
+        selected_df=selected_df,
+        warnings=warnings,
+        notes=notes,
+    )
+
+    comp_statistics = _calculate_comp_statistics(selected_df)
+
+    market_momentum = _calculate_limited_market_momentum(
+        all_prepared_df=all_prepared_df,
+        column_map=column_map,
+        notes=notes,
+    )
 
     result = {
         "engine_version": ENGINE_VERSION,
         "engine_status": "success",
-        "engine_scope": "baseline_pre_api_valuation",
-        "important_note": (
-            "This is the first connected valuation engine. It is intended to verify "
-            "the full intake-to-valuation pipeline. Final ICHIBAN adjustment logic can "
-            "be layered on top after this baseline engine is stable."
+        "engine_scope": "pre_api_selected_comparable_evidence",
+        "important_boundary_note": (
+            "This pre-API engine selects and adjusts comparable evidence. "
+            "It does not create the final GPT-qualified Market Entry Range. "
+            "The GPT layer should review comp quality, remarks, condition, live competition, "
+            "market momentum, and adjustment reasonableness before writing seller-facing conclusions."
         ),
-        "subject_summary": subject_summary,
+        "subject_summary": subject,
+        "adjustment_rates": ADJUSTMENT_RATES,
         "market_rows_loaded": int(len(df)),
         "closed_rows_available": int(len(closed_df)),
-        "comp_rows_used": int(len(comp_df)),
+        "comp_rows_scored": int(len(adjusted_df)),
+        "comp_rows_selected": int(len(selected_df)),
         "column_map": column_map,
-        "comp_filtering": {
-            "subject_above_grade_sqft": subject_above_grade,
-            "target_above_grade_min_85pct": (
-                round(subject_above_grade * 0.85, 2) if subject_above_grade else None
-            ),
-            "target_above_grade_max_110pct": (
-                round(subject_above_grade * 1.10, 2) if subject_above_grade else None
-            ),
-            "filter_notes": notes,
+        "online_estimated_value": online_estimated_value,
+        "selected_comparable_evidence_range": selected_comparable_evidence_range,
+        "comp_statistics": comp_statistics,
+        "market_momentum_and_buyer_competition": market_momentum,
+        "market_conditions_1004mc": _summarize_1004mc(one_hundred_four_mc_summary),
+        "selected_adjusted_comps": _build_adjusted_comp_records(selected_df),
+        "all_scored_comps_preview": _build_adjusted_comp_records(adjusted_df.head(15)),
+        "gpt_review_package": {
+            "requires_gpt_qualification": True,
+            "gpt_should_review": [
+                "whether selected comps are true comps or only support comps",
+                "whether superior comps should support only the upper end",
+                "whether inferior comps should support the lower end",
+                "public remarks and broker remarks for condition, updating, layout, location, and buyer appeal",
+                "whether the Online Estimated Value is aligned with the selected comparable evidence",
+                "whether market momentum supports Protective, Competitive, Evidence-Aligned, Strategic Upper, or Aspirational Entry",
+                "whether the seller-facing Market Entry Range should be narrowed, qualified, or posture-labeled",
+                "whether active and pending same-micro-market properties should be treated as market signals rather than closed comps",
+                "whether HOA, gated-pocket, subdivision, or association differences affect buyer perception",
+            ],
+            "final_gpt_output_expected_later": [
+                "Pricing Posture",
+                "Comparable-Supported Market Entry Range",
+                "seller-facing explanation",
+            ],
         },
-        "comp_statistics": comp_stats,
-        "avm_summary": avm_summary,
-        "market_conditions_1004mc": market_conditions_summary,
-        "recommended_range": recommended_range,
-        "comp_records_used": comp_records,
+        "data_verification_notes": data_verification_notes,
         "warnings": warnings,
         "notes": notes,
     }
@@ -277,7 +387,211 @@ def run_valuation_engine(
 
 
 # ---------------------------------------------------------------------
-# Data preparation
+# Subject handling
+# ---------------------------------------------------------------------
+
+def _build_subject_features(
+    subject_profile: Dict[str, Any],
+    warnings: List[str],
+    data_verification_notes: List[str],
+) -> Dict[str, Any]:
+    """
+    Build a normalized subject profile from Realist/manual/other intake.
+
+    This function intentionally treats Realist/county data as useful but imperfect.
+    It avoids using broad Realist total-finished fields as above-grade square footage.
+    """
+
+    # 1. Exact/direct above-grade fields only.
+    direct_above_grade = _first_number(
+        subject_profile,
+        [
+            "above_grade_sqft",
+            "Above Grade Finished Area",
+            "Bldg Sq Ft - Above Ground",
+            "bldg_sq_ft_above_ground",
+        ],
+    )
+
+    # 2. Realist total-finished fields. These are NOT above grade.
+    total_finished_sqft = _first_number(
+        subject_profile,
+        [
+            "total_finished_sqft",
+            "Bldg Sq Ft - Finished",
+            "bldg_sq_ft_finished",
+            "Bldg Sq Ft",
+            "building_sqft",
+            "realist_summary_finished_sqft",
+        ],
+    )
+
+    basement_total = _first_number(
+        subject_profile,
+        [
+            "basement_sqft",
+            "total_basement_sqft",
+            "below_grade_sqft",
+            "below_grade_area",
+            "Bldg Sq Ft - Basement",
+            "bldg_sq_ft_basement",
+        ],
+    )
+
+    finished_basement = _first_number(
+        subject_profile,
+        [
+            "finished_basement_sqft",
+            "below_grade_finished_sqft",
+            "below_grade_finished_area",
+            "Bldg Sq Ft - Finished Basement",
+            "bldg_sq_ft_finished_basement",
+        ],
+    )
+
+    unfinished_basement = _first_number(
+        subject_profile,
+        [
+            "unfinished_basement_sqft",
+            "below_grade_unfinished_sqft",
+            "below_grade_unfinished_area",
+            "Bldg Sq Ft - Unfinished Basement",
+            "bldg_sq_ft_unfinished_basement",
+        ],
+    )
+
+    building_area_total = _first_number(
+        subject_profile,
+        [
+            "building_area_total",
+            "Building Area Total",
+            "Bldg Sq Ft - Total",
+            "bldg_sq_ft_total",
+            "total_building_area",
+            "total_sqft",
+        ],
+    )
+
+    living_area = _first_number(
+        subject_profile,
+        [
+            "living_area",
+            "Living Area",
+            "MLS Sq Ft",
+            "total_finished_living_area",
+        ],
+    )
+
+    # 3. Basement derivation and verification-tolerant fallback.
+    if basement_total is not None and finished_basement is not None and unfinished_basement is None:
+        unfinished_basement = max(basement_total - finished_basement, 0)
+
+    if basement_total is None and finished_basement is not None:
+        basement_total = finished_basement
+        unfinished_basement = 0
+        data_verification_notes.append(
+            "Subject total basement square footage was missing; using finished basement square footage as total basement until verified."
+        )
+
+    if basement_total is not None and finished_basement is None:
+        finished_basement = 0
+        unfinished_basement = basement_total
+        data_verification_notes.append(
+            "Subject finished basement square footage was missing; treating basement as unfinished until verified."
+        )
+
+    # 4. Above-grade selection / correction.
+    above_grade = direct_above_grade
+    above_grade_source = "direct_above_grade_field" if direct_above_grade is not None else None
+
+    if above_grade is None and total_finished_sqft is not None and finished_basement is not None:
+        inferred = total_finished_sqft - finished_basement
+        if inferred > 0:
+            above_grade = inferred
+            above_grade_source = "inferred_from_total_finished_minus_finished_basement"
+            data_verification_notes.append(
+                f"Above-grade square footage was inferred because the direct above-grade field was missing. "
+                f"Calculation used Total Finished SqFt ({round(total_finished_sqft)}) minus Finished Basement SqFt "
+                f"({round(finished_basement)}) = {round(inferred)}. Manual verification recommended."
+            )
+
+    if (
+        direct_above_grade is not None
+        and total_finished_sqft is not None
+        and finished_basement is not None
+        and round(direct_above_grade + finished_basement) == round(total_finished_sqft)
+    ):
+        data_verification_notes.append(
+            f"Square footage cross-check passed: Above Ground SqFt ({round(direct_above_grade)}) "
+            f"+ Finished Basement SqFt ({round(finished_basement)}) = Total Finished SqFt ({round(total_finished_sqft)})."
+        )
+
+    if (
+        above_grade is not None
+        and total_finished_sqft is not None
+        and finished_basement is not None
+        and round(above_grade) == round(total_finished_sqft)
+        and finished_basement > 0
+    ):
+        corrected = total_finished_sqft - finished_basement
+        if corrected > 0:
+            data_verification_notes.append(
+                f"Above-grade square footage appeared to equal Total Finished SqFt ({round(total_finished_sqft)}). "
+                f"Corrected above-grade to {round(corrected)} by subtracting Finished Basement SqFt ({round(finished_basement)})."
+            )
+            above_grade = corrected
+            above_grade_source = "corrected_from_total_finished_minus_finished_basement"
+
+    if above_grade is None:
+        warnings.append(
+            "Subject Above Grade Finished Area is missing. Comp selection quality will be reduced."
+        )
+
+    return {
+        "subject_address": subject_profile.get("subject_address")
+        or subject_profile.get("address")
+        or subject_profile.get("situs_address"),
+        "above_grade_sqft": _round_number(above_grade),
+        "above_grade_source": above_grade_source,
+        "basement_sqft": _round_number(basement_total),
+        "finished_basement_sqft": _round_number(finished_basement),
+        "unfinished_basement_sqft": _round_number(unfinished_basement),
+        "total_finished_sqft": _round_number(total_finished_sqft),
+        "living_area": _round_number(living_area),
+        "building_area_total": _round_number(building_area_total),
+        "property_type": subject_profile.get("property_type"),
+        "property_subtype": subject_profile.get("property_subtype")
+        or subject_profile.get("property_sub_type")
+        or subject_profile.get("land_use_county"),
+        "levels": subject_profile.get("levels")
+        or subject_profile.get("Levels")
+        or subject_profile.get("style")
+        or subject_profile.get("Style")
+        or subject_profile.get("stories")
+        or subject_profile.get("Stories")
+        or subject_profile.get("architectural_style")
+        or subject_profile.get("Architectural Style"),
+        "subject_layout_notes": subject_profile.get("subject_layout_notes")
+        or subject_profile.get("layout_notes")
+        or subject_profile.get("style_notes"),
+        "beds": _first_number(subject_profile, ["beds", "bedrooms"]),
+        "baths": _first_number(subject_profile, ["baths", "bathrooms"]),
+        "year_built": _first_number(subject_profile, ["year_built", "Year Built"]),
+        "lot_sqft": _first_number(subject_profile, ["lot_sqft", "lot_size_sqft", "land_sqft", "land_square_feet"]),
+        "neighborhood_name": subject_profile.get("neighborhood_name")
+        or subject_profile.get("neighborhood"),
+        "subdivision": subject_profile.get("subdivision"),
+        "zoning": subject_profile.get("zoning"),
+        "real_avm": _first_number(subject_profile, ["real_avm", "RealAVM"]),
+        "real_avm_range_low": _first_number(subject_profile, ["real_avm_range_low"]),
+        "real_avm_range_high": _first_number(subject_profile, ["real_avm_range_high"]),
+        "zillow_estimate": _first_number(subject_profile, ["zillow_estimate", "zestimate"]),
+        "redfin_estimate": _first_number(subject_profile, ["redfin_estimate"]),
+    }
+
+
+# ---------------------------------------------------------------------
+# Market data preparation
 # ---------------------------------------------------------------------
 
 def _as_dataframe(market_data: Any) -> pd.DataFrame:
@@ -318,7 +632,6 @@ def _detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
                 break
 
         if found is None:
-            # Soft contains fallback.
             for normalized_column, original_column in normalized_columns.items():
                 if any(_normalize_column_name(alias) in normalized_column for alias in aliases):
                     found = original_column
@@ -332,273 +645,749 @@ def _detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
 def _prepare_market_dataframe(
     df: pd.DataFrame,
     column_map: Dict[str, Optional[str]],
-    subject_above_grade: Optional[float],
+    subject: Dict[str, Any],
     warnings: List[str],
+    notes: List[str],
 ) -> Dict[str, Any]:
     working = df.copy()
-    notes: List[str] = []
 
     close_col = column_map.get("close_price")
     list_col = column_map.get("list_price")
+    original_list_col = column_map.get("original_list_price")
     concessions_col = column_map.get("concessions")
     ag_col = column_map.get("above_grade_sqft")
+    living_area_col = column_map.get("living_area")
+    building_area_total_col = column_map.get("building_area_total")
+    basement_col = column_map.get("basement_sqft")
+    finished_basement_col = column_map.get("finished_basement_sqft")
+    unfinished_basement_col = column_map.get("unfinished_basement_sqft")
     status_col = column_map.get("status")
+    year_col = column_map.get("year_built")
+    close_date_col = column_map.get("close_date")
+    days_col = column_map.get("days_in_mls")
+    subtype_col = column_map.get("property_subtype")
+    levels_col = column_map.get("levels")
+    subdivision_col = column_map.get("subdivision")
+    association_name_col = column_map.get("association_name")
+    association_name_2_col = column_map.get("association_name_2")
+    association_fee_col = column_map.get("association_fee_total_annual")
+    public_remarks_col = column_map.get("public_remarks")
+    broker_remarks_col = column_map.get("broker_remarks")
 
     if close_col is None:
-        warnings.append("Close Price column was not detected. Valuation may be blocked.")
-        return {
-            "closed_df": pd.DataFrame(),
-            "comp_df": pd.DataFrame(),
-            "notes": notes,
-        }
+        warnings.append("Close Price column was not detected. Closed comparable valuation may be blocked.")
 
-    working["_close_price"] = working[close_col].apply(_to_number)
+    if close_col:
+        working["_close_price"] = working[close_col].apply(_to_number)
+    else:
+        working["_close_price"] = None
 
     if list_col:
         working["_list_price"] = working[list_col].apply(_to_number)
     else:
         working["_list_price"] = None
 
+    if original_list_col:
+        working["_original_list_price"] = working[original_list_col].apply(_to_number)
+    else:
+        working["_original_list_price"] = working["_list_price"]
+
     if concessions_col:
         working["_concessions"] = working[concessions_col].apply(_to_number).fillna(0)
     else:
         working["_concessions"] = 0
-        notes.append("No concessions column detected; net price equals close price.")
+        notes.append("No concessions column detected; net price equals close price for closed comps.")
 
     if ag_col:
         working["_above_grade_sqft"] = working[ag_col].apply(_to_number)
     else:
         working["_above_grade_sqft"] = None
-        warnings.append("Above-grade square footage column was not detected.")
+        warnings.append(
+            "Above Grade Finished Area column was not detected. "
+            "Comp filtering cannot safely use Living Area or Building Area Total as a substitute."
+        )
 
+    if living_area_col:
+        working["_living_area"] = working[living_area_col].apply(_to_number)
+    else:
+        working["_living_area"] = None
+
+    if building_area_total_col:
+        working["_building_area_total"] = working[building_area_total_col].apply(_to_number)
+    else:
+        working["_building_area_total"] = None
+
+    if basement_col:
+        working["_basement_sqft"] = working[basement_col].apply(_to_number)
+    else:
+        working["_basement_sqft"] = None
+        notes.append("No total basement square footage column detected.")
+
+    if finished_basement_col:
+        working["_finished_basement_sqft"] = working[finished_basement_col].apply(_to_number)
+    else:
+        working["_finished_basement_sqft"] = None
+        notes.append("No finished basement square footage column detected.")
+
+    if unfinished_basement_col:
+        working["_unfinished_basement_sqft"] = working[unfinished_basement_col].apply(_to_number)
+    else:
+        working["_unfinished_basement_sqft"] = None
+
+    working["_unfinished_basement_sqft"] = working.apply(
+        lambda row: _derive_unfinished_basement(
+            row.get("_basement_sqft"),
+            row.get("_finished_basement_sqft"),
+            row.get("_unfinished_basement_sqft"),
+        ),
+        axis=1,
+    )
+
+    if year_col:
+        working["_year_built"] = working[year_col].apply(_to_number)
+    else:
+        working["_year_built"] = None
+
+    if close_date_col:
+        working["_close_date"] = working[close_date_col].apply(_to_datetime)
+    else:
+        working["_close_date"] = None
+
+    if days_col:
+        working["_days_in_mls"] = working[days_col].apply(_to_number)
+    else:
+        working["_days_in_mls"] = None
+
+    if subtype_col:
+        working["_property_subtype"] = working[subtype_col].astype(str)
+    else:
+        working["_property_subtype"] = ""
+
+    if levels_col:
+        working["_levels"] = working[levels_col].astype(str)
+    else:
+        working["_levels"] = ""
+
+    if subdivision_col:
+        working["_subdivision"] = working[subdivision_col].astype(str)
+    else:
+        working["_subdivision"] = ""
+
+    if association_name_col:
+        working["_association_name"] = working[association_name_col].astype(str)
+    else:
+        working["_association_name"] = ""
+
+    if association_name_2_col:
+        working["_association_name_2"] = working[association_name_2_col].astype(str)
+    else:
+        working["_association_name_2"] = ""
+
+    if association_fee_col:
+        working["_association_fee_total_annual"] = working[association_fee_col].apply(_to_number)
+    else:
+        working["_association_fee_total_annual"] = None
+
+    if public_remarks_col:
+        working["_public_remarks"] = working[public_remarks_col].astype(str)
+    else:
+        working["_public_remarks"] = ""
+
+    if broker_remarks_col:
+        working["_broker_remarks"] = working[broker_remarks_col].astype(str)
+    else:
+        working["_broker_remarks"] = ""
+
+    if status_col:
+        working["_status_text"] = working[status_col].astype(str).str.lower()
+    else:
+        working["_status_text"] = ""
+        warnings.append(
+            "MLS status column was not detected; rows with usable close prices will be treated as closed evidence."
+        )
+
+    working["_address"] = working.apply(lambda row: _row_address(row, column_map), axis=1)
     working["_net_price"] = working["_close_price"] - working["_concessions"]
 
-    working = working[
+    all_prepared_df = working.copy()
+
+    usable_price_df = working[
         working["_close_price"].notna()
         & (working["_close_price"] > 0)
         & working["_net_price"].notna()
         & (working["_net_price"] > 0)
     ].copy()
 
-    if working.empty:
+    if usable_price_df.empty:
         return {
+            "all_prepared_df": all_prepared_df,
             "closed_df": pd.DataFrame(),
-            "comp_df": pd.DataFrame(),
-            "notes": notes,
+            "comp_candidates_df": pd.DataFrame(),
         }
 
     if status_col:
-        status_text = working[status_col].astype(str).str.lower()
         closed_mask = (
-            status_text.str.contains("closed")
-            | status_text.str.contains("sold")
-            | status_text.str.contains("settled")
+            usable_price_df["_status_text"].str.contains("closed")
+            | usable_price_df["_status_text"].str.contains("sold")
+            | usable_price_df["_status_text"].str.contains("settled")
         )
 
-        closed_df = working[closed_mask].copy()
+        closed_df = usable_price_df[closed_mask].copy()
 
         if closed_df.empty:
-            closed_df = working.copy()
+            closed_df = usable_price_df.copy()
             warnings.append(
                 "No rows clearly marked Closed/Sold were detected; using rows with usable close prices."
             )
     else:
-        closed_df = working.copy()
-        warnings.append(
-            "MLS status column was not detected; using rows with usable close prices."
-        )
+        closed_df = usable_price_df.copy()
 
-    comp_df = closed_df.copy()
+    comp_candidates_df = _filter_comp_candidates(
+        closed_df=closed_df,
+        subject=subject,
+        warnings=warnings,
+        notes=notes,
+    )
 
-    if subject_above_grade and ag_col:
+    return {
+        "all_prepared_df": all_prepared_df,
+        "closed_df": closed_df,
+        "comp_candidates_df": comp_candidates_df,
+    }
+
+
+def _filter_comp_candidates(
+    closed_df: pd.DataFrame,
+    subject: Dict[str, Any],
+    warnings: List[str],
+    notes: List[str],
+) -> pd.DataFrame:
+    working = closed_df.copy()
+
+    subject_above_grade = subject.get("above_grade_sqft")
+    subject_levels = _normalize_level(subject.get("levels"))
+
+    if subject_above_grade:
         low = subject_above_grade * 0.85
         high = subject_above_grade * 1.10
 
-        size_filtered = comp_df[
-            comp_df["_above_grade_sqft"].notna()
-            & (comp_df["_above_grade_sqft"] >= low)
-            & (comp_df["_above_grade_sqft"] <= high)
-        ].copy()
+        working["_within_size_window"] = working["_above_grade_sqft"].apply(
+            lambda x: bool(x is not None and not pd.isna(x) and low <= x <= high)
+        )
+        working["_size_diff_pct"] = working["_above_grade_sqft"].apply(
+            lambda x: _safe_pct_diff(x, subject_above_grade)
+        )
+
+        size_filtered = working[working["_within_size_window"]].copy()
 
         if len(size_filtered) >= 3:
-            comp_df = size_filtered
+            working = size_filtered
             notes.append(
                 f"Applied 85% to 110% above-grade size filter: {round(low)} to {round(high)} sqft."
             )
         elif len(size_filtered) > 0:
-            comp_df = size_filtered
+            working = size_filtered
             warnings.append(
-                f"Only {len(size_filtered)} comps remained after the 85% to 110% size filter."
+                f"Only {len(size_filtered)} comps remained after 85% to 110% above-grade filtering."
             )
         else:
             warnings.append(
-                "No comps remained after the 85% to 110% above-grade size filter; using all closed comps."
+                "No comps remained after 85% to 110% above-grade filtering; using all closed comps as backup candidates."
             )
     else:
+        working["_within_size_window"] = False
+        working["_size_diff_pct"] = None
+        notes.append("Above-grade size filter was not applied because subject square footage was missing.")
+
+    if subject_levels:
+        working["_level_match"] = working["_levels"].apply(
+            lambda value: _levels_match(subject_levels, value)
+        )
+
+        level_filtered = working[working["_level_match"]].copy()
+
+        if len(level_filtered) >= 3:
+            working = level_filtered
+            notes.append("Applied like-level/style filter because at least 3 matching closed comps were available.")
+        elif len(level_filtered) > 0:
+            working = level_filtered
+            warnings.append(
+                f"Only {len(level_filtered)} comps matched subject level/style; using those as best available."
+            )
+        else:
+            warnings.append(
+                "No closed comps matched subject level/style; using size-filtered or available closed comps as backup."
+            )
+    else:
+        working["_level_match"] = False
+        notes.append("Like-level/style filter was not applied because subject level/style was missing.")
+
+    return working.copy()
+
+
+# ---------------------------------------------------------------------
+# Adjustments and scoring
+# ---------------------------------------------------------------------
+
+def _apply_adjustments_and_scoring(
+    comp_df: pd.DataFrame,
+    subject: Dict[str, Any],
+    one_hundred_four_mc_summary: Dict[str, Any],
+    warnings: List[str],
+    notes: List[str],
+) -> pd.DataFrame:
+    working = comp_df.copy()
+
+    effective_date = _determine_effective_date(working)
+    monthly_market_change = _to_number(
+        one_hundred_four_mc_summary.get("monthly_market_change_percent")
+    )
+
+    time_adjustments_enabled = (
+        monthly_market_change is not None
+        and abs(monthly_market_change) >= 0.25
+        and "_close_date" in working.columns
+    )
+
+    if time_adjustments_enabled:
         notes.append(
-            "Above-grade size filter was not applied because subject or comp square footage was missing."
-        )
-
-    if ag_col and "_above_grade_sqft" in comp_df.columns:
-        comp_df["_net_ppsf"] = comp_df.apply(
-            lambda row: (
-                row["_net_price"] / row["_above_grade_sqft"]
-                if row["_above_grade_sqft"] and row["_above_grade_sqft"] > 0
-                else None
-            ),
-            axis=1,
+            f"Time adjustment enabled using 1004MC monthly market change of {monthly_market_change}%."
         )
     else:
-        comp_df["_net_ppsf"] = None
-
-    if subject_above_grade:
-        comp_df["_subject_size_ppsf_estimate"] = comp_df["_net_ppsf"].apply(
-            lambda ppsf: ppsf * subject_above_grade if ppsf and ppsf > 0 else None
+        notes.append(
+            "Time adjustment not applied unless 1004MC monthly market change is supplied and meaningful."
         )
-    else:
-        comp_df["_subject_size_ppsf_estimate"] = None
 
-    comp_df = comp_df.sort_values(
-        by=["_subject_size_ppsf_estimate", "_net_price"],
+    rows = []
+
+    for _idx, row in working.iterrows():
+        net_price = _to_number(row.get("_net_price")) or 0
+
+        above_grade_adj = _sf_adjustment(
+            subject.get("above_grade_sqft"),
+            row.get("_above_grade_sqft"),
+            ADJUSTMENT_RATES["above_grade_sqft"],
+        )
+
+        finished_basement_adj = _sf_adjustment(
+            subject.get("finished_basement_sqft"),
+            row.get("_finished_basement_sqft"),
+            ADJUSTMENT_RATES["finished_basement_sqft"],
+        )
+
+        unfinished_basement_adj = _sf_adjustment(
+            subject.get("unfinished_basement_sqft"),
+            row.get("_unfinished_basement_sqft"),
+            ADJUSTMENT_RATES["unfinished_basement_sqft"],
+        )
+
+        time_adjustment = 0
+
+        if time_adjustments_enabled:
+            time_adjustment = _calculate_time_adjustment(
+                net_price=net_price,
+                close_date=row.get("_close_date"),
+                effective_date=effective_date,
+                monthly_market_change_percent=monthly_market_change,
+            )
+
+        total_adjustments = (
+            above_grade_adj
+            + finished_basement_adj
+            + unfinished_basement_adj
+            + time_adjustment
+        )
+
+        adjusted_price = net_price + total_adjustments
+
+        score, score_notes = _score_comp(row, subject, effective_date)
+
+        row_dict = row.to_dict()
+        row_dict.update(
+            {
+                "_above_grade_adjustment": above_grade_adj,
+                "_finished_basement_adjustment": finished_basement_adj,
+                "_unfinished_basement_adjustment": unfinished_basement_adj,
+                "_time_adjustment": time_adjustment,
+                "_total_adjustments": total_adjustments,
+                "_adjusted_price": adjusted_price,
+                "_comp_score": score,
+                "_comp_score_notes": score_notes,
+            }
+        )
+
+        rows.append(row_dict)
+
+    adjusted = pd.DataFrame(rows)
+
+    adjusted = adjusted.sort_values(
+        by=["_comp_score", "_within_size_window", "_adjusted_price"],
+        ascending=[False, False, True],
         na_position="last",
     ).copy()
 
-    return {
-        "closed_df": closed_df,
-        "comp_df": comp_df,
-        "notes": notes,
-    }
+    return adjusted
 
 
-# ---------------------------------------------------------------------
-# Calculations
-# ---------------------------------------------------------------------
+def _select_best_comps(adjusted_df: pd.DataFrame, notes: List[str]) -> pd.DataFrame:
+    if adjusted_df.empty:
+        return adjusted_df
 
-def _calculate_comp_stats(
-    comp_df: pd.DataFrame,
-    subject_above_grade: Optional[float],
-    one_hundred_four_mc_summary: Dict[str, Any],
-) -> Dict[str, Any]:
-    net_prices = _clean_numeric_list(comp_df["_net_price"].tolist())
-    ppsf_values = _clean_numeric_list(comp_df["_net_ppsf"].tolist())
-    subject_size_estimates = _clean_numeric_list(
-        comp_df["_subject_size_ppsf_estimate"].tolist()
+    usable = adjusted_df[
+        adjusted_df["_adjusted_price"].notna()
+        & (adjusted_df["_adjusted_price"] > 0)
+    ].copy()
+
+    if usable.empty:
+        return adjusted_df.head(0)
+
+    strong = usable[usable["_comp_score"] >= 60].copy()
+
+    if len(strong) >= 3:
+        selected = strong.head(6).copy()
+        notes.append(f"Selected {len(selected)} comps with score of 60 or higher.")
+        return selected
+
+    selected = usable.head(min(6, len(usable))).copy()
+    notes.append(
+        f"Fewer than 3 comps scored 60 or higher. Selected best {len(selected)} available comps."
     )
+    return selected
 
-    median_net_price = _median(net_prices)
-    average_net_price = _average(net_prices)
 
-    median_ppsf = _median(ppsf_values)
-    average_ppsf = _average(ppsf_values)
+def _score_comp(
+    row: pd.Series,
+    subject: Dict[str, Any],
+    effective_date: Optional[pd.Timestamp],
+) -> Tuple[float, List[str]]:
+    score = 100.0
+    score_notes: List[str] = []
 
-    if subject_size_estimates:
-        median_subject_size_estimate = _median(subject_size_estimates)
-        average_subject_size_estimate = _average(subject_size_estimates)
-    elif subject_above_grade and median_ppsf:
-        median_subject_size_estimate = median_ppsf * subject_above_grade
-        average_subject_size_estimate = average_ppsf * subject_above_grade if average_ppsf else None
+    subject_ag = subject.get("above_grade_sqft")
+    comp_ag = _to_number(row.get("_above_grade_sqft"))
+
+    if subject_ag and comp_ag:
+        pct_diff = abs(comp_ag - subject_ag) / subject_ag
+
+        if pct_diff <= 0.10:
+            score_notes.append("strong size match")
+        elif pct_diff <= 0.20:
+            score_notes.append("moderate size difference")
+            score -= 8
+        else:
+            score_notes.append("larger size difference")
+            score -= min(30, pct_diff * 100)
+
+        if not row.get("_within_size_window"):
+            score -= 8
     else:
-        median_subject_size_estimate = median_net_price
-        average_subject_size_estimate = average_net_price
+        score -= 12
+        score_notes.append("missing size comparison")
 
-    return {
-        "median_net_price": _round_money(median_net_price),
-        "average_net_price": _round_money(average_net_price),
-        "lowest_net_price": _round_money(min(net_prices)) if net_prices else None,
-        "highest_net_price": _round_money(max(net_prices)) if net_prices else None,
-        "median_net_ppsf": round(median_ppsf, 2) if median_ppsf else None,
-        "average_net_ppsf": round(average_ppsf, 2) if average_ppsf else None,
-        "median_subject_size_ppsf_estimate": _round_money(median_subject_size_estimate),
-        "average_subject_size_ppsf_estimate": _round_money(average_subject_size_estimate),
-        "comp_count": int(len(comp_df)),
-        "time_trend_context": {
-            "annual_market_change_percent": one_hundred_four_mc_summary.get(
-                "annual_market_change_percent"
-            ),
-            "monthly_market_change_percent": one_hundred_four_mc_summary.get(
-                "monthly_market_change_percent"
-            ),
-            "market_trend_classification": one_hundred_four_mc_summary.get(
-                "market_trend_classification"
-            ),
-            "time_adjustment_applied_in_this_engine": False,
-            "note": (
-                "1004MC trend is loaded as support context. Time adjustments are not "
-                "automatically applied in this baseline engine."
-            ),
-        },
-    }
+    if row.get("_level_match") is True:
+        score_notes.append("like-level/style match")
+    elif _normalize_level(subject.get("levels")):
+        score -= 8
+        score_notes.append("level/style not confirmed as match")
+
+    subject_year = _to_number(subject.get("year_built"))
+    comp_year = _to_number(row.get("_year_built"))
+
+    if subject_year and comp_year:
+        year_diff = abs(subject_year - comp_year)
+
+        if year_diff <= 10:
+            score_notes.append("similar year built")
+        elif year_diff <= 25:
+            score -= 5
+            score_notes.append("moderate age difference")
+        else:
+            score -= 10
+            score_notes.append("larger age difference")
+
+    subject_basement = _to_number(subject.get("basement_sqft"))
+    comp_basement = _to_number(row.get("_basement_sqft"))
+
+    if subject_basement is not None and comp_basement is not None:
+        basement_diff = abs(subject_basement - comp_basement)
+
+        if basement_diff <= 250:
+            score_notes.append("similar basement size")
+        elif basement_diff <= 750:
+            score -= 4
+            score_notes.append("moderate basement difference")
+        else:
+            score -= 8
+            score_notes.append("larger basement difference")
+
+    subject_subtype = _normalize_property_subtype(subject.get("property_subtype"))
+    comp_subtype = _normalize_property_subtype(row.get("_property_subtype"))
+
+    if subject_subtype and comp_subtype:
+        if subject_subtype == comp_subtype:
+            score_notes.append("similar property subtype")
+        else:
+            score -= 8
+            score_notes.append("property subtype differs")
+
+    close_date = row.get("_close_date")
+
+    if effective_date is not None and close_date is not None and not pd.isna(close_date):
+        months_old = abs(_months_between(close_date, effective_date))
+
+        if months_old <= 3:
+            score_notes.append("recent sale")
+        elif months_old <= 6:
+            score -= 3
+            score_notes.append("moderately recent sale")
+        elif months_old <= 12:
+            score -= 7
+            score_notes.append("older sale")
+        else:
+            score -= 12
+            score_notes.append("sale over 12 months old")
+
+    score = max(0, min(100, score))
+
+    return round(score, 2), score_notes
 
 
-def _calculate_avm_summary(subject_profile: Dict[str, Any]) -> Dict[str, Any]:
+# ---------------------------------------------------------------------
+# Output calculations
+# ---------------------------------------------------------------------
+
+def _calculate_online_estimated_value(subject_profile: Dict[str, Any]) -> Dict[str, Any]:
     values = []
 
-    real_avm = _to_number(subject_profile.get("real_avm"))
-    real_low = _to_number(subject_profile.get("real_avm_range_low"))
-    real_high = _to_number(subject_profile.get("real_avm_range_high"))
-    zillow = _to_number(subject_profile.get("zillow_estimate"))
-    redfin = _to_number(subject_profile.get("redfin_estimate"))
+    zillow = _first_number(subject_profile, ["zillow_estimate", "zestimate"])
+    redfin = _first_number(subject_profile, ["redfin_estimate"])
+    real_avm = _first_number(subject_profile, ["real_avm", "RealAVM"])
 
-    if real_avm:
-        values.append(("RealAVM", real_avm))
     if zillow:
         values.append(("Zillow", zillow))
+
     if redfin:
         values.append(("Redfin", redfin))
 
-    numeric_values = [value for _, value in values]
+    if real_avm:
+        values.append(("RealAVM", real_avm))
+
+    numeric_values = [value for _name, value in values]
+
+    sources_found = len(values)
+
+    if sources_found == 0:
+        label = "Based on 0 of 3 online estimated values found"
+    elif sources_found == 1:
+        label = "Based on 1 of 3 online estimated values found"
+    elif sources_found == 2:
+        label = "Based on 2 of 3 online estimated values found"
+    else:
+        label = "Based on 3 of 3 online estimated values found"
 
     return {
-        "real_avm": _round_money(real_avm),
-        "real_avm_range_low": _round_money(real_low),
-        "real_avm_range_high": _round_money(real_high),
+        "display_label": "Online Estimated Value",
         "zillow_estimate": _round_money(zillow),
         "redfin_estimate": _round_money(redfin),
-        "online_estimate_sources_used": [name for name, _value in values],
-        "online_estimate_average": _round_money(_average(numeric_values)),
-        "online_estimate_low": _round_money(min(numeric_values)) if numeric_values else None,
-        "online_estimate_high": _round_money(max(numeric_values)) if numeric_values else None,
+        "real_avm": _round_money(real_avm),
+        "sources_found": sources_found,
+        "sources_possible": 3,
+        "sources_used": [name for name, _value in values],
+        "source_count_label": label,
+        "range_low": _round_money(min(numeric_values)) if numeric_values else None,
+        "range_high": _round_money(max(numeric_values)) if numeric_values else None,
+        "range_width": (
+            _round_money(max(numeric_values) - min(numeric_values))
+            if numeric_values
+            else None
+        ),
+        "basis": "Lowest to highest available online estimated values.",
+        "requires_gpt_comparison_to_comps": True,
     }
 
 
-def _calculate_recommended_range(
-    comp_stats: Dict[str, Any],
-    avm_summary: Dict[str, Any],
+def _calculate_selected_comparable_evidence_range(
+    selected_df: pd.DataFrame,
     warnings: List[str],
+    notes: List[str],
 ) -> Dict[str, Any]:
-    comp_anchor = comp_stats.get("median_subject_size_ppsf_estimate")
-    if comp_anchor is None:
-        comp_anchor = comp_stats.get("median_net_price")
+    adjusted_prices = _clean_numeric_list(selected_df["_adjusted_price"].tolist())
+    net_prices = _clean_numeric_list(selected_df["_net_price"].tolist())
 
-    if comp_anchor is None:
-        warnings.append("No comp anchor was available for recommended range.")
+    if not adjusted_prices:
+        warnings.append("No adjusted prices were available for Selected Comparable Evidence Range.")
         return {
+            "display_label": "Selected Comparable Evidence Range",
             "range_low": None,
             "range_high": None,
             "range_width": None,
-            "anchor_value": None,
-            "method": "not_available",
+            "basis": "Not available.",
+            "requires_gpt_qualification": True,
         }
 
-    anchor = float(comp_anchor)
-
-    # Seller-facing recommendation target: generally keep spread around $50K.
-    low = _round_to_nearest(anchor - 25_000, 5_000)
-    high = _round_to_nearest(anchor + 25_000, 5_000)
-
-    if high <= low:
-        high = low + 50_000
+    notes.append(
+        "Selected Comparable Evidence Range is based on the lowest to highest total adjusted price among selected comps."
+    )
 
     return {
-        "range_low": int(low),
-        "range_high": int(high),
-        "range_width": int(high - low),
-        "anchor_value": int(_round_to_nearest(anchor, 5_000)),
-        "method": (
-            "Baseline comp-based range using median subject-size PPSF estimate. "
-            "AVMs are retained as support context, not the primary valuation anchor."
+        "display_label": "Selected Comparable Evidence Range",
+        "raw_net_price_low": _round_money(min(net_prices)) if net_prices else None,
+        "raw_net_price_high": _round_money(max(net_prices)) if net_prices else None,
+        "range_low": _round_money(min(adjusted_prices)),
+        "range_high": _round_money(max(adjusted_prices)),
+        "range_width": _round_money(max(adjusted_prices) - min(adjusted_prices)),
+        "basis": "Lowest to highest total adjusted price among selected comparable sales.",
+        "not_final_market_entry_range": True,
+        "requires_gpt_qualification": True,
+    }
+
+
+def _calculate_comp_statistics(selected_df: pd.DataFrame) -> Dict[str, Any]:
+    adjusted_prices = _clean_numeric_list(selected_df["_adjusted_price"].tolist())
+    net_prices = _clean_numeric_list(selected_df["_net_price"].tolist())
+    scores = _clean_numeric_list(selected_df["_comp_score"].tolist())
+
+    weighted_adjusted_average = _weighted_average(
+        values=adjusted_prices,
+        weights=[max(score, 10) for score in scores],
+    )
+
+    return {
+        "selected_comp_count": int(len(selected_df)),
+        "lowest_net_price": _round_money(min(net_prices)) if net_prices else None,
+        "highest_net_price": _round_money(max(net_prices)) if net_prices else None,
+        "median_net_price": _round_money(_median(net_prices)),
+        "average_net_price": _round_money(_average(net_prices)),
+        "lowest_adjusted_price": _round_money(min(adjusted_prices)) if adjusted_prices else None,
+        "highest_adjusted_price": _round_money(max(adjusted_prices)) if adjusted_prices else None,
+        "median_adjusted_price": _round_money(_median(adjusted_prices)),
+        "average_adjusted_price": _round_money(_average(adjusted_prices)),
+        "weighted_adjusted_average": _round_money(weighted_adjusted_average),
+        "average_comp_score": round(_average(scores), 2) if scores else None,
+        "interpretation_note": (
+            "Average and median are retained as evidence indicators only. "
+            "They are not final value conclusions without GPT/Realtor qualification."
         ),
-        "avm_support_average": avm_summary.get("online_estimate_average"),
+    }
+
+
+def _calculate_limited_market_momentum(
+    all_prepared_df: pd.DataFrame,
+    column_map: Dict[str, Optional[str]],
+    notes: List[str],
+) -> Dict[str, Any]:
+    if all_prepared_df.empty or "_status_text" not in all_prepared_df.columns:
+        return {
+            "section_label": "Market Momentum & Buyer Competition",
+            "status": "not_available",
+            "source": "current comparable evidence file only",
+            "note": (
+                "A separate competitive market snapshot is recommended for full Shopping Cart Theory analysis."
+            ),
+            "requires_gpt_interpretation": True,
+        }
+
+    df = all_prepared_df.copy()
+    status = df["_status_text"].fillna("").astype(str)
+
+    active_mask = status.str.contains("active")
+    pending_mask = status.str.contains("pending") | status.str.contains("under contract")
+    closed_mask = (
+        status.str.contains("closed")
+        | status.str.contains("sold")
+        | status.str.contains("settled")
+    )
+
+    active_count = int(active_mask.sum())
+    pending_count = int(pending_mask.sum())
+    closed_count = int(closed_mask.sum())
+
+    recent_monthly_successes = (pending_count + closed_count) / 3 if (pending_count + closed_count) else 0
+
+    months_of_seller_competition = (
+        active_count / recent_monthly_successes
+        if active_count and recent_monthly_successes
+        else None
+    )
+
+    estimated_30_day_success_rate = (
+        recent_monthly_successes / active_count
+        if active_count and recent_monthly_successes
+        else None
+    )
+
+    solds = df[closed_mask].copy()
+
+    avg_original_list = (
+        _average(_clean_numeric_list(solds["_original_list_price"].tolist()))
+        if not solds.empty
+        else None
+    )
+    avg_sale = (
+        _average(_clean_numeric_list(solds["_close_price"].tolist()))
+        if not solds.empty
+        else None
+    )
+
+    list_to_sale_ratio = (
+        avg_sale / avg_original_list
+        if avg_original_list and avg_sale
+        else None
+    )
+
+    notes.append(
+        "Market Momentum & Buyer Competition is limited when only the comparable evidence file is uploaded."
+    )
+
+    return {
+        "section_label": "Market Momentum & Buyer Competition",
+        "status": "limited_from_current_upload",
+        "source": "current comparable evidence file only",
+        "important_limitation": (
+            "Comparable sales and competitive market data are related but not identical. "
+            "A property may be active competition without being a valid comparable sale. "
+            "A separate 2-mile active/pending competitive market file is recommended for full Shopping Cart Theory analysis."
+        ),
+        "time_frame_assumption": "90 days when uploaded file reflects a 90-day search; otherwise based on supplied rows.",
+        "active_count": active_count,
+        "pending_count": pending_count,
+        "closed_count": closed_count,
+        "recent_monthly_successes": round(recent_monthly_successes, 2),
+        "months_of_seller_competition": (
+            round(months_of_seller_competition, 2)
+            if months_of_seller_competition is not None
+            else None
+        ),
+        "estimated_30_day_success_rate": (
+            round(estimated_30_day_success_rate, 4)
+            if estimated_30_day_success_rate is not None
+            else None
+        ),
+        "estimated_30_day_success_rate_percent": (
+            round(estimated_30_day_success_rate * 100, 2)
+            if estimated_30_day_success_rate is not None
+            else None
+        ),
+        "average_original_list_price_of_solds": _round_money(avg_original_list),
+        "average_sale_price_of_solds": _round_money(avg_sale),
+        "list_to_sale_ratio": round(list_to_sale_ratio, 4) if list_to_sale_ratio else None,
+        "list_to_sale_ratio_percent": round(list_to_sale_ratio * 100, 2) if list_to_sale_ratio else None,
+        "average_dim_active": (
+            _round_number(_average(_clean_numeric_list(df[active_mask]["_days_in_mls"].tolist())))
+            if active_count
+            else None
+        ),
+        "average_dim_pending": (
+            _round_number(_average(_clean_numeric_list(df[pending_mask]["_days_in_mls"].tolist())))
+            if pending_count
+            else None
+        ),
+        "average_dim_closed": (
+            _round_number(_average(_clean_numeric_list(df[closed_mask]["_days_in_mls"].tolist())))
+            if closed_count
+            else None
+        ),
+        "requires_gpt_interpretation": True,
     }
 
 
@@ -643,56 +1432,48 @@ def _summarize_1004mc(summary: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------
-# Output helpers
+# Output records
 # ---------------------------------------------------------------------
 
-def _subject_summary(subject_profile: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "subject_address": subject_profile.get("subject_address"),
-        "above_grade_sqft": subject_profile.get("above_grade_sqft"),
-        "basement_sqft": subject_profile.get("basement_sqft"),
-        "finished_basement_sqft": subject_profile.get("finished_basement_sqft"),
-        "property_type": subject_profile.get("property_type"),
-        "property_subtype": subject_profile.get("property_subtype"),
-        "beds": subject_profile.get("beds"),
-        "baths": subject_profile.get("baths"),
-        "year_built": subject_profile.get("year_built"),
-        "lot_sqft": subject_profile.get("lot_sqft"),
-        "neighborhood_name": subject_profile.get("neighborhood_name"),
-        "subdivision": subject_profile.get("subdivision"),
-        "zoning": subject_profile.get("zoning"),
-        "real_avm": subject_profile.get("real_avm"),
-        "real_avm_range_low": subject_profile.get("real_avm_range_low"),
-        "real_avm_range_high": subject_profile.get("real_avm_range_high"),
-    }
-
-
-def _build_comp_records(
-    comp_df: pd.DataFrame,
-    column_map: Dict[str, Optional[str]],
-) -> List[Dict[str, Any]]:
+def _build_adjusted_comp_records(comp_df: pd.DataFrame) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
 
-    for _idx, row in comp_df.head(25).iterrows():
-        address = _row_address(row, column_map)
-
+    for _idx, row in comp_df.iterrows():
         record = {
-            "address": address,
-            "status": _row_value(row, column_map.get("status")),
+            "address": row.get("_address"),
+            "status": row.get("_status_text"),
             "close_price": _round_money(row.get("_close_price")),
             "concessions": _round_money(row.get("_concessions")),
             "net_price": _round_money(row.get("_net_price")),
+            "list_price": _round_money(row.get("_list_price")),
+            "original_list_price": _round_money(row.get("_original_list_price")),
             "above_grade_sqft": _round_number(row.get("_above_grade_sqft")),
-            "net_ppsf": _round_number(row.get("_net_ppsf"), decimals=2),
-            "subject_size_ppsf_estimate": _round_money(
-                row.get("_subject_size_ppsf_estimate")
-            ),
-            "days_in_mls": _row_value(row, column_map.get("days_in_mls")),
-            "close_date": _row_value(row, column_map.get("close_date")),
-            "year_built": _row_value(row, column_map.get("year_built")),
-            "beds": _row_value(row, column_map.get("beds")),
-            "baths": _row_value(row, column_map.get("baths")),
-            "subdivision": _row_value(row, column_map.get("subdivision")),
+            "living_area": _round_number(row.get("_living_area")),
+            "building_area_total": _round_number(row.get("_building_area_total")),
+            "basement_sqft": _round_number(row.get("_basement_sqft")),
+            "finished_basement_sqft": _round_number(row.get("_finished_basement_sqft")),
+            "unfinished_basement_sqft": _round_number(row.get("_unfinished_basement_sqft")),
+            "above_grade_adjustment": _round_money(row.get("_above_grade_adjustment")),
+            "finished_basement_adjustment": _round_money(row.get("_finished_basement_adjustment")),
+            "unfinished_basement_adjustment": _round_money(row.get("_unfinished_basement_adjustment")),
+            "time_adjustment": _round_money(row.get("_time_adjustment")),
+            "total_adjustments": _round_money(row.get("_total_adjustments")),
+            "total_adjusted_price": _round_money(row.get("_adjusted_price")),
+            "comp_score": _round_number(row.get("_comp_score"), decimals=2),
+            "score_notes": row.get("_comp_score_notes"),
+            "within_85_to_110_size_window": bool(row.get("_within_size_window")),
+            "level_style_match": bool(row.get("_level_match")),
+            "close_date": _json_safe(row.get("_close_date")),
+            "days_in_mls": _round_number(row.get("_days_in_mls")),
+            "year_built": _round_number(row.get("_year_built")),
+            "property_subtype": row.get("_property_subtype"),
+            "levels": row.get("_levels"),
+            "subdivision": row.get("_subdivision"),
+            "association_name": row.get("_association_name"),
+            "association_name_2": row.get("_association_name_2"),
+            "association_fee_total_annual": _round_money(row.get("_association_fee_total_annual")),
+            "public_remarks_for_gpt_review": row.get("_public_remarks"),
+            "broker_remarks_for_gpt_review": row.get("_broker_remarks"),
         }
 
         records.append(_json_safe(record))
@@ -700,8 +1481,89 @@ def _build_comp_records(
     return records
 
 
+# ---------------------------------------------------------------------
+# Adjustment helpers
+# ---------------------------------------------------------------------
+
+def _sf_adjustment(subject_value: Any, comp_value: Any, rate: float) -> float:
+    subject_num = _to_number(subject_value)
+    comp_num = _to_number(comp_value)
+
+    if subject_num is None or comp_num is None:
+        return 0.0
+
+    return float((subject_num - comp_num) * rate)
+
+
+def _derive_unfinished_basement(
+    total_basement: Any,
+    finished_basement: Any,
+    supplied_unfinished: Any,
+) -> Optional[float]:
+    supplied = _to_number(supplied_unfinished)
+
+    if supplied is not None:
+        return supplied
+
+    total = _to_number(total_basement)
+    finished = _to_number(finished_basement)
+
+    if total is not None and finished is not None:
+        return max(total - finished, 0)
+
+    if total is not None and finished is None:
+        return total
+
+    return None
+
+
+def _calculate_time_adjustment(
+    net_price: float,
+    close_date: Any,
+    effective_date: Optional[pd.Timestamp],
+    monthly_market_change_percent: float,
+) -> float:
+    if net_price <= 0:
+        return 0.0
+
+    if close_date is None or pd.isna(close_date) or effective_date is None:
+        return 0.0
+
+    months = _months_between(close_date, effective_date)
+
+    if months <= 0:
+        return 0.0
+
+    months = min(months, 12)
+
+    monthly_rate = monthly_market_change_percent / 100
+    adjustment = net_price * monthly_rate * months
+
+    max_adjustment = net_price * 0.08
+    adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
+
+    return float(adjustment)
+
+
+def _determine_effective_date(df: pd.DataFrame) -> Optional[pd.Timestamp]:
+    if "_close_date" not in df.columns:
+        return None
+
+    dates = pd.to_datetime(df["_close_date"], errors="coerce").dropna()
+
+    if dates.empty:
+        return None
+
+    return dates.max()
+
+
+# ---------------------------------------------------------------------
+# Generic utilities
+# ---------------------------------------------------------------------
+
 def _row_address(row: pd.Series, column_map: Dict[str, Optional[str]]) -> Optional[str]:
     address_col = column_map.get("address")
+
     if address_col and pd.notna(row.get(address_col)):
         return str(row.get(address_col))
 
@@ -718,20 +1580,77 @@ def _row_address(row: pd.Series, column_map: Dict[str, Optional[str]]) -> Option
     return " ".join(parts).strip() or None
 
 
-def _row_value(row: pd.Series, column: Optional[str]) -> Any:
-    if not column:
-        return None
-
-    value = row.get(column)
-    return None if _is_missing(value) else value
-
-
-# ---------------------------------------------------------------------
-# Generic utilities
-# ---------------------------------------------------------------------
-
 def _normalize_column_name(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _clean_text(value: Any) -> str:
+    if value is None or _is_missing(value):
+        return ""
+
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _normalize_level(value: Any) -> str:
+    text = _clean_text(value)
+
+    if text in {"", "blank", "none", "nan"}:
+        return ""
+
+    if text in {"one", "1", "1story", "onestory", "ranch", "ranchstyle"}:
+        return "one"
+
+    if text in {"two", "2", "2story", "twostory"}:
+        return "two"
+
+    if text in {"bilevel", "bi"}:
+        return "bilevel"
+
+    if text in {"trilevel", "tri"}:
+        return "trilevel"
+
+    if text in {"multisplit", "split", "splitlevel", "multilevel", "multi"}:
+        return "multisplit"
+
+    if text in {"threeormore", "three", "3", "3ormore", "threeplus"}:
+        return "threeormore"
+
+    return text
+
+
+def _levels_match(subject_level: str, comp_levels_value: Any) -> bool:
+    comp_level = _normalize_level(comp_levels_value)
+
+    if not subject_level or not comp_level:
+        return False
+
+    return subject_level == comp_level
+
+
+def _normalize_property_subtype(value: Any) -> str:
+    text = _clean_text(value)
+
+    if text in {
+        "sfr",
+        "sf",
+        "singlefamily",
+        "singlefamilyresidence",
+        "detached",
+        "residentialdetached",
+    }:
+        return "singlefamilyresidence"
+
+    return text
+
+
+def _first_number(data: Dict[str, Any], keys: List[str]) -> Optional[float]:
+    for key in keys:
+        if key in data:
+            number = _to_number(data.get(key))
+            if number is not None:
+                return number
+
+    return None
 
 
 def _to_number(value: Any) -> Optional[float]:
@@ -739,7 +1658,7 @@ def _to_number(value: Any) -> Optional[float]:
         return None
 
     if isinstance(value, (int, float)):
-        if math.isnan(value) if isinstance(value, float) else False:
+        if isinstance(value, float) and math.isnan(value):
             return None
         return float(value)
 
@@ -754,6 +1673,19 @@ def _to_number(value: Any) -> Optional[float]:
 
     try:
         return float(cleaned)
+    except Exception:
+        return None
+
+
+def _to_datetime(value: Any) -> Optional[pd.Timestamp]:
+    if _is_missing(value):
+        return None
+
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed
     except Exception:
         return None
 
@@ -803,6 +1735,18 @@ def _average(values: List[float]) -> Optional[float]:
     return sum(values) / len(values)
 
 
+def _weighted_average(values: List[float], weights: List[float]) -> Optional[float]:
+    if not values or not weights or len(values) != len(weights):
+        return None
+
+    total_weight = sum(weights)
+
+    if total_weight <= 0:
+        return None
+
+    return sum(value * weight for value, weight in zip(values, weights)) / total_weight
+
+
 def _round_money(value: Any) -> Optional[int]:
     number = _to_number(value)
 
@@ -821,8 +1765,26 @@ def _round_number(value: Any, decimals: int = 0) -> Optional[float]:
     return round(number, decimals)
 
 
-def _round_to_nearest(value: float, nearest: int) -> int:
-    return int(round(value / nearest) * nearest)
+def _safe_pct_diff(value: Any, anchor: Any) -> Optional[float]:
+    value_num = _to_number(value)
+    anchor_num = _to_number(anchor)
+
+    if value_num is None or anchor_num is None or anchor_num == 0:
+        return None
+
+    return abs(value_num - anchor_num) / anchor_num
+
+
+def _months_between(start_date: Any, end_date: Any) -> float:
+    start = _to_datetime(start_date)
+    end = _to_datetime(end_date)
+
+    if start is None or end is None:
+        return 0.0
+
+    days = (end - start).days
+
+    return max(0.0, days / 30.4375)
 
 
 def _json_safe(value: Any) -> Any:
@@ -843,6 +1805,9 @@ def _json_safe(value: Any) -> Any:
 
     if isinstance(value, Path):
         return str(value)
+
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
 
     if _is_missing(value):
         return None
