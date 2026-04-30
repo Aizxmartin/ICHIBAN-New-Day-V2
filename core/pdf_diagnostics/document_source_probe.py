@@ -90,6 +90,35 @@ def probe_document_source(file_path: str | Path) -> DiagnosticResult:
     return result
 
 
+def _route_coordinate_pdf(result: DiagnosticResult, confidence: str) -> DiagnosticResult:
+    """
+    Route PDFs that expose coordinate text.
+
+    Realist/CoreLogic PDFs often fail plain text extraction in Streamlit but
+    still expose useful pdfplumber coordinate words. Those files should go to
+    the Realist coordinate parser, not the generic parser.
+    """
+
+    result.document_category = "B_searchable_pdf_coordinate_layout"
+    result.manual_fallback_required = False
+
+    if result.likely_source == "realist_corelogic":
+        result.recommended_parser = "realist_pdf_coordinate_parser"
+        result.confidence = "medium"
+        if confidence == "low":
+            result.warnings.append(
+                "Coordinate text was detected and the source appears to be Realist/CoreLogic; "
+                "routed to the Realist parser even though normal text extraction was weak."
+            )
+        return result
+
+    result.recommended_parser = "generic_pdf_coordinate_parser"
+    result.confidence = confidence
+    if confidence == "low":
+        result.warnings.append("Coordinate text was detected, but normal text extraction was weak.")
+    return result
+
+
 def _probe_pdf(path: Path, result: DiagnosticResult) -> DiagnosticResult:
     text_probe = probe_pdf_text(path)
     layout_probe = probe_pdf_layout(path)
@@ -124,11 +153,7 @@ def _probe_pdf(path: Path, result: DiagnosticResult) -> DiagnosticResult:
             return result
 
         if result.coordinate_text_available:
-            result.document_category = "B_searchable_pdf_coordinate_layout"
-            result.recommended_parser = "generic_pdf_coordinate_parser"
-            result.manual_fallback_required = False
-            result.confidence = "medium"
-            return result
+            return _route_coordinate_pdf(result, confidence="medium")
 
         result.document_category = "A_searchable_pdf_clean_text"
         result.recommended_parser = "generic_pdf_text_parser"
@@ -137,12 +162,7 @@ def _probe_pdf(path: Path, result: DiagnosticResult) -> DiagnosticResult:
         return result
 
     if result.coordinate_text_available:
-        result.document_category = "B_searchable_pdf_coordinate_layout"
-        result.recommended_parser = "generic_pdf_coordinate_parser"
-        result.manual_fallback_required = False
-        result.confidence = "low"
-        result.warnings.append("Coordinate text was detected, but normal text extraction was weak.")
-        return result
+        return _route_coordinate_pdf(result, confidence="low")
 
     if result.image_only:
         result.document_category = "D_image_only_pdf"
