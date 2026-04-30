@@ -90,6 +90,41 @@ def probe_document_source(file_path: str | Path) -> DiagnosticResult:
     return result
 
 
+def _route_coordinate_pdf(result: DiagnosticResult, confidence: str) -> DiagnosticResult:
+    """
+    Route PDFs that expose coordinate text.
+
+    Realist/CoreLogic PDFs often fail normal/plain text extraction in Streamlit
+    but still expose useful pdfplumber coordinate words. Those files should be
+    routed to the Realist parser, not the generic parser.
+    """
+
+    result.document_category = "B_searchable_pdf_coordinate_layout"
+    result.manual_fallback_required = False
+
+    if result.likely_source == "realist_corelogic":
+        result.recommended_parser = "realist_pdf_coordinate_parser"
+        result.confidence = "medium"
+
+        if confidence == "low":
+            result.warnings.append(
+                "Coordinate text was detected and the source appears to be Realist/CoreLogic; "
+                "routed to the Realist parser even though normal text extraction was weak."
+            )
+
+        return result
+
+    result.recommended_parser = "generic_pdf_coordinate_parser"
+    result.confidence = confidence
+
+    if confidence == "low":
+        result.warnings.append(
+            "Coordinate text was detected, but normal text extraction was weak."
+        )
+
+    return result
+
+
 def _probe_pdf(path: Path, result: DiagnosticResult) -> DiagnosticResult:
     text_probe = probe_pdf_text(path)
     layout_probe = probe_pdf_layout(path)
@@ -98,19 +133,24 @@ def _probe_pdf(path: Path, result: DiagnosticResult) -> DiagnosticResult:
     result.debug["pdf_layout_probe"] = layout_probe
 
     result.text_found = bool(text_probe.get("text_found"))
-    result.estimated_page_count = text_probe.get("page_count") or layout_probe.get("page_count")
+    result.estimated_page_count = (
+        text_probe.get("page_count") or layout_probe.get("page_count")
+    )
     result.extracted_text_sample = text_probe.get("text_sample", "")
 
-    result.coordinate_text_available = bool(layout_probe.get("coordinate_text_available"))
+    result.coordinate_text_available = bool(
+        layout_probe.get("coordinate_text_available")
+    )
 
     # Heuristic: if text extraction finds almost nothing, assume image-only.
     char_count = int(text_probe.get("total_text_characters") or 0)
     result.image_only = char_count < 50 and not result.coordinate_text_available
 
-    # Detect likely report source from available text.
+    # Detect likely report source from both normal text and layout/coordinate text.
     combined_sample = (
-        (text_probe.get("text_sample") or "") + " " +
-        (layout_probe.get("layout_text_sample") or "")
+        (text_probe.get("text_sample") or "")
+        + " "
+        + (layout_probe.get("layout_text_sample") or "")
     ).lower()
 
     result.likely_source = _infer_likely_source(combined_sample)
@@ -124,11 +164,7 @@ def _probe_pdf(path: Path, result: DiagnosticResult) -> DiagnosticResult:
             return result
 
         if result.coordinate_text_available:
-            result.document_category = "B_searchable_pdf_coordinate_layout"
-            result.recommended_parser = "generic_pdf_coordinate_parser"
-            result.manual_fallback_required = False
-            result.confidence = "medium"
-            return result
+            return _route_coordinate_pdf(result, confidence="medium")
 
         result.document_category = "A_searchable_pdf_clean_text"
         result.recommended_parser = "generic_pdf_text_parser"
@@ -137,12 +173,7 @@ def _probe_pdf(path: Path, result: DiagnosticResult) -> DiagnosticResult:
         return result
 
     if result.coordinate_text_available:
-        result.document_category = "B_searchable_pdf_coordinate_layout"
-        result.recommended_parser = "generic_pdf_coordinate_parser"
-        result.manual_fallback_required = False
-        result.confidence = "low"
-        result.warnings.append("Coordinate text was detected, but normal text extraction was weak.")
-        return result
+        return _route_coordinate_pdf(result, confidence="low")
 
     if result.image_only:
         result.document_category = "D_image_only_pdf"
@@ -197,44 +228,59 @@ def _infer_likely_source(text: str) -> str:
     Light heuristic only. Do not use this as final extraction logic.
     """
 
-    if any(term in text for term in [
-        "realist",
-        "corelogic",
-        "realavm",
-        "property detail report",
-        "tax information",
-        "bldg sq ft",
-    ]):
+    if any(
+        term in text
+        for term in [
+            "realist",
+            "corelogic",
+            "realavm",
+            "property detail report",
+            "tax information",
+            "bldg sq ft",
+        ]
+    ):
         return "realist_corelogic"
 
-    if any(term in text for term in [
-        "zestimate",
-        "zillow",
-        "rent zestimate",
-    ]):
+    if any(
+        term in text
+        for term in [
+            "zestimate",
+            "zillow",
+            "rent zestimate",
+        ]
+    ):
         return "zillow"
 
-    if any(term in text for term in [
-        "redfin estimate",
-        "redfin",
-    ]):
+    if any(
+        term in text
+        for term in [
+            "redfin estimate",
+            "redfin",
+        ]
+    ):
         return "redfin"
 
-    if any(term in text for term in [
-        "1004mc",
-        "market conditions addendum",
-        "absorption rate",
-        "overall trend",
-    ]):
+    if any(
+        term in text
+        for term in [
+            "1004mc",
+            "market conditions addendum",
+            "absorption rate",
+            "overall trend",
+        ]
+    ):
         return "1004mc_market_conditions"
 
-    if any(term in text for term in [
-        "recolorado",
-        "mls #",
-        "listing id",
-        "close price",
-        "days in mls",
-    ]):
+    if any(
+        term in text
+        for term in [
+            "recolorado",
+            "mls #",
+            "listing id",
+            "close price",
+            "days in mls",
+        ]
+    ):
         return "mls_export_or_report"
 
     return "unknown"

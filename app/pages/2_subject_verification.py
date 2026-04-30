@@ -294,6 +294,34 @@ def _facts_to_subject_profile(
     set_field("lot_sqft", facts.get("lot_sqft"))
     set_field("year_built", facts.get("year_built"))
 
+    # -----------------------------------------------------------------
+    # Beds / Baths
+    # -----------------------------------------------------------------
+    # Realist may show beds/baths in two places:
+    # - Page 1 summary row: Beds, Full Baths, Half Baths
+    # - Characteristics: Bedrooms, Baths - Total
+    #
+    # The parser normalizes those into:
+    # - beds
+    # - full_baths
+    # - half_baths
+    # - total_baths
+    #
+    # The user can still manually correct these before saving the verified subject.
+
+    set_field("beds", facts.get("beds"), "Realist PDF: Beds / Bedrooms")
+
+    total_baths = facts.get("total_baths")
+
+    if total_baths is None:
+        full_baths = facts.get("full_baths")
+        half_baths = facts.get("half_baths") or 0
+
+        if full_baths is not None:
+            total_baths = float(full_baths) + (float(half_baths) * 0.5)
+
+    set_field("baths", total_baths, "Realist PDF: Baths - Total / Full + Half Baths")
+
     set_field("property_type", facts.get("property_type"))
     set_field("property_subtype", facts.get("property_type"))
 
@@ -400,8 +428,8 @@ def _show_profile_table(profile: Dict[str, Any]) -> None:
         rows.append(
             [
                 FIELD_LABELS.get(field, field),
-                profile.get(field),
-                profile.get("field_sources", {}).get(field, ""),
+                _safe_text(profile.get(field)),
+                _safe_text(profile.get("field_sources", {}).get(field, "")),
             ]
         )
 
@@ -512,7 +540,15 @@ with st.container(border=True):
             f"Image only: {diagnostic.image_only}",
         ]
 
-        if diagnostic.recommended_parser == "realist_pdf_coordinate_parser":
+        should_run_realist_parser = (
+            diagnostic.recommended_parser == "realist_pdf_coordinate_parser"
+            or (
+                diagnostic.likely_source == "realist_corelogic"
+                and diagnostic.coordinate_text_available
+            )
+        )
+
+        if should_run_realist_parser:
             facts = parse_realist_subject(temp_path)
             facts_dict = facts.to_dict()
 
