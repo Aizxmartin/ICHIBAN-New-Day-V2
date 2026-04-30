@@ -159,21 +159,83 @@ def _apply_values(result: MarketConditions1004MC, values: Dict[str, Any]) -> Non
 
 
 def _extract_pdf_text(path: Path) -> tuple[str, Optional[int]]:
+    """
+    Extract text from a 1004MC PDF.
+
+    The original version required pypdf and crashed on Streamlit Cloud when pypdf
+    was not installed. This version tries pypdf first, then falls back to
+    pdfplumber so the app can still diagnose or parse text-layer PDFs.
+    """
+
+    parts: List[str] = []
+    page_count: Optional[int] = None
+
     try:
         from pypdf import PdfReader
-    except Exception as exc:
-        raise ImportError("pypdf is required. Install with: py -m pip install pypdf") from exc
 
-    reader = PdfReader(str(path))
-    parts: List[str] = []
+        reader = PdfReader(str(path))
+        page_count = len(reader.pages)
 
-    for page in reader.pages:
-        try:
-            parts.append(page.extract_text() or "")
-        except Exception:
-            continue
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+    except Exception:
+        pass
 
-    return "\n".join(parts), len(reader.pages)
+    text = "\n".join(parts).strip()
+
+    if len(text) >= 100:
+        return text, page_count
+
+    plumber_parts: List[str] = []
+
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(str(path)) as pdf:
+            page_count = page_count or len(pdf.pages)
+
+            for page in pdf.pages:
+                try:
+                    page_text = page.extract_text(
+                        x_tolerance=2,
+                        y_tolerance=3,
+                        layout=False,
+                    ) or ""
+
+                    if page_text.strip():
+                        plumber_parts.append(page_text)
+                        continue
+
+                    words = page.extract_words(
+                        x_tolerance=2,
+                        y_tolerance=3,
+                        keep_blank_chars=False,
+                        use_text_flow=False,
+                    )
+
+                    word_text = " ".join(
+                        word.get("text", "")
+                        for word in words
+                        if word.get("text")
+                    )
+
+                    if word_text.strip():
+                        plumber_parts.append(word_text)
+
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    fallback_text = "\n".join(plumber_parts).strip()
+
+    if fallback_text:
+        return fallback_text, page_count
+
+    return text, page_count
 
 
 def _clean_text(text: str) -> str:
