@@ -83,6 +83,12 @@
     "main_comp_table_policy": "Keep the seller-facing comp table concise. Favor address, closed/net price, close date, Days in MLS, and total adjusted price or range-related result.",
     "adjustment_summary_policy": "Use a concise Adjustment Summary or Generalized Adjustments Made section for major categories instead of a long comp-by-comp adjustment dump.",
     "buyer_considerations_policy": "Use Buyer Considerations for repair, update, presentation, and buyer-perception items. Keep them practical and prioritized.",
-    "data_verification_policy": "Move unverified or uncertain claims to Data Verification Notes rather than presenting them as facts."
+    "data_verification_policy": "Move unverified or uncertain claims to Data Verification Notes rather than presenting them as facts.",
+    "boca_style_baseline_policy": "Use the 10006 Boca updated report as the fuller seller-facing reference format: recommended range and ruler first, clean comp table, How the Value Was Determined, Market Momentum, Buyer Considerations, Strategy / Advisor Notes, and Disclaimer.",
+    "ruler_range_policy": "Use Market Support → Target Position → Market Opportunity. Keep labels and values from overlapping in .docx output.",
+    "market_momentum_policy": "Seller-facing momentum is speed/activity only. Use Average DIM only; do not include Median DIM or pricing in this section.",
+    "micro_market_signal_policy": "Include level/style comparison, market-stat count breakdowns, same-street or enclave signals, and search criteria when available.",
+    "seller_facing_language_policy": "Avoid GPT, Realtor/GPT, backend, payload, module, and reconciliation language in seller-facing output. Prefer How the Value Was Determined, Market Evidence Summary, Pricing Basis, or Value Positioning Summary.",
+    "disclaimer_title_policy": "Use the heading 'Disclaimer' while keeping the full disclaimer paragraph."
   }
 }
