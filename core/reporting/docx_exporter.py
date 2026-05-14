@@ -210,6 +210,33 @@ def _enforce_pricing_text(report_text: str, report_input: Optional[Dict[str, Any
     return text
 
 
+def _is_generated_intro_line(normalized_line: str) -> bool:
+    return (
+        normalized_line.startswith("ichiban insight")
+        or normalized_line.startswith("prepared for:")
+        or normalized_line.startswith("subject:")
+        or normalized_line.startswith("prepared:")
+    )
+
+
+def _starts_duplicate_ruler_block(normalized_line: str) -> bool:
+    return (
+        normalized_line.startswith("recommended range + ruler")
+        or normalized_line.startswith("ruler range")
+        or normalized_line.startswith("suggested list price range")
+        or normalized_line.startswith("range indicator comments")
+    )
+
+
+def _ends_duplicate_ruler_block(normalized_line: str) -> bool:
+    return (
+        normalized_line.startswith("executive summary")
+        or normalized_line.startswith("executive summary bullets")
+        or normalized_line.startswith("comparable evidence")
+        or normalized_line.startswith("subject property snapshot")
+    )
+
+
 def report_markdown_to_docx_bytes(
     report_text: str,
     title: Optional[str] = None,
@@ -238,38 +265,31 @@ def report_markdown_to_docx_bytes(
     report_text = _enforce_pricing_text(report_text or "", report_input)
 
     skip_duplicate_ruler_block = bool(report_input)
-    skipping = False
+    skipping_duplicate_ruler = False
 
     for raw_line in (report_text or "").splitlines():
         line = raw_line.strip()
         if not line:
-            skipping = False
+            # Do not end duplicate-ruler skipping on blank lines. GPT output often
+            # separates the duplicate heading, values, and notes with blank lines.
             continue
 
-        normalized = line.lower().strip("# ")
+        normalized = line.lower().strip("# ").strip()
 
         # The exporter supplies its own title and top Ruler visual. Avoid duplicate
         # title/prepared metadata and duplicate pricing/ruler blocks from the GPT body.
-        if skip_duplicate_ruler_block and (
-            normalized.startswith("ichiban insight")
-            or normalized.startswith("prepared for:")
-            or normalized.startswith("subject:")
-            or normalized.startswith("prepared:")
-        ):
+        if skip_duplicate_ruler_block and _is_generated_intro_line(normalized):
             continue
 
-        if skip_duplicate_ruler_block and (
-            normalized.startswith("recommended range + ruler")
-            or normalized.startswith("ruler range")
-            or normalized.startswith("suggested list price range")
-            or normalized.startswith("range indicator comments")
-        ):
-            skipping = True
+        if skip_duplicate_ruler_block and _starts_duplicate_ruler_block(normalized):
+            skipping_duplicate_ruler = True
             continue
-        if skipping and (line.startswith("#") or normalized.startswith("executive summary") or normalized.startswith("comparable evidence")):
-            skipping = False
-        if skipping:
-            continue
+
+        if skipping_duplicate_ruler:
+            if _ends_duplicate_ruler_block(normalized):
+                skipping_duplicate_ruler = False
+            else:
+                continue
 
         _add_markdown_line(document, line)
 
