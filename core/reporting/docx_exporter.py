@@ -154,12 +154,17 @@ def _add_ruler_visual(document: Document, report_input: Dict[str, Any]) -> None:
 
 
 def _add_markdown_line(document: Document, line: str) -> None:
+    if line.strip() in {"---", "***", "___"}:
+        return
     if line.startswith("### "):
         document.add_heading(_clean_inline_markdown(line[4:]), level=3)
     elif line.startswith("## "):
         document.add_heading(_clean_inline_markdown(line[3:]), level=2)
     elif line.startswith("# "):
         document.add_heading(_clean_inline_markdown(line[2:]), level=1)
+    elif _is_locked_report_section_heading(line):
+        heading_text = re.sub(r"^\s*\d+\s*[\).:-]\s*", "", line).strip()
+        document.add_heading(_clean_inline_markdown(heading_text), level=1)
     elif line.startswith(("- ", "• ")):
         document.add_paragraph(_clean_inline_markdown(line[2:]), style="List Bullet")
     elif re.match(r"^\d+\.\s+", line):
@@ -219,11 +224,42 @@ def _is_generated_intro_line(normalized_line: str) -> bool:
     )
 
 
+LOCKED_REPORT_SECTION_STARTS = [
+    "recommended range + ruler",
+    "executive summary",
+    "comparable evidence",
+    "how the value was determined",
+    "generalized adjustments",
+    "avm",
+    "online benchmarks",
+    "current competition",
+    "market momentum",
+    "buyer considerations",
+    "strategy",
+    "launch notes",
+    "disclaimer",
+]
+
+
+def _normalize_report_line_for_matching(line: str) -> str:
+    """Normalize GPT section labels so duplicate-skipping works with 1), 1., #, or plain headings."""
+    normalized = (line or "").lower().strip().strip("# ").strip()
+    normalized = re.sub(r"^\s*\d+\s*[\).:-]\s*", "", normalized).strip()
+    normalized = re.sub(r"^\s*[ivx]+\s*[\).:-]\s*", "", normalized).strip()
+    return normalized
+
+
+def _is_locked_report_section_heading(line: str) -> bool:
+    normalized_line = _normalize_report_line_for_matching(line)
+    return any(normalized_line.startswith(prefix) for prefix in LOCKED_REPORT_SECTION_STARTS)
+
+
 def _starts_duplicate_ruler_block(normalized_line: str) -> bool:
     return (
         normalized_line.startswith("recommended range + ruler")
         or normalized_line.startswith("ruler range")
         or normalized_line.startswith("suggested list price range")
+        or normalized_line.startswith("recommended market entry range")
         or normalized_line.startswith("range indicator comments")
     )
 
@@ -274,7 +310,7 @@ def report_markdown_to_docx_bytes(
             # separates the duplicate heading, values, and notes with blank lines.
             continue
 
-        normalized = line.lower().strip("# ").strip()
+        normalized = _normalize_report_line_for_matching(line)
 
         # The exporter supplies its own title and top Ruler visual. Avoid duplicate
         # title/prepared metadata and duplicate pricing/ruler blocks from the GPT body.
