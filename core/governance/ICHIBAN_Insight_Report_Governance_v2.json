@@ -426,7 +426,7 @@
     },
     {
       "step_number": 11,
-      "step_name": "Value Reconciliation",
+      "step_name": "Value Positioning Summary",
       "program_action": "Reconcile the adjusted and time-adjusted comp range with AVM benchmarks, local momentum, active competition, and subject positioning.",
       "must_store": [
         "raw_closed_comp_range",
@@ -611,7 +611,7 @@
         "pending_count",
         "closed_count",
         "price band context",
-        "average and median Days in MLS by status",
+        "average Days in MLS by status",
         "close-to-list ratio if available"
       ]
     },
@@ -693,7 +693,7 @@
     {
       "order": 9,
       "section_key": "value_range_reconciliation",
-      "title": "Value Range Reconciliation",
+      "title": "How the Value Was Determined",
       "required": true,
       "purpose": "Reconcile raw comps, adjusted comps, time-adjusted comps, online estimates, and market conditions into a supported range.",
       "content_requirements": [
@@ -781,7 +781,7 @@
     {
       "order": 15,
       "section_key": "ichiban_methodology_and_disclaimer",
-      "title": "ICHIBAN Methodology & Disclaimer",
+      "title": "Disclaimer",
       "required": true,
       "purpose": "Clarify that the analysis is a professional estimate and decision-support tool, not a guarantee.",
       "content_requirements": [
@@ -796,7 +796,7 @@
   "disclaimer_language": {
     "required": true,
     "placement": "near_end",
-    "preferred_title": "ICHIBAN Methodology & Disclaimer",
+    "preferred_title": "Disclaimer",
     "text_blocks": {
       "market_estimate_disclaimer": "This analysis is an estimate of potential market value based on currently available market data, comparable sales, and prevailing market conditions. It is intended to provide guidance and support pricing decisions, but it is not a guarantee of value or sales price. Real estate markets are dynamic and influenced by many factors beyond the control of the agent, seller, or analytical tools. Ultimately, market value is determined by buyer perception, buyer demand, and competing properties at the time the home is introduced to the open market. While this analysis incorporates objective data and current trends, buyer preferences, property presentation, financing conditions, and market competition may significantly influence the final outcome. Accordingly, this estimate should be considered a professional opinion based on available information and current market conditions. Actual market performance may vary.",
       "methodology_disclaimer": "The ICHIBAN analysis is designed to provide a structured, data-driven estimate of potential market value. The analysis incorporates objective market data sourced from the Multiple Listing Service (MLS), as reported by participating real estate agents, along with available public record information. While these sources are widely relied upon within the industry, both MLS and public record data may contain inaccuracies or incomplete information. The resulting summary is intended to serve as a professional decision-support tool. Final pricing decisions remain the responsibility of the licensed real estate professional and the property owner.",
@@ -913,12 +913,110 @@
       "build 1004MC calculation and storage module",
       "build physical adjustment engine",
       "build time adjustment engine",
-      "build value reconciliation output",
+      "build value positioning output",
       "build GPT payload builder",
       "rewrite GPT report prompt using this governance file",
       "build clean .docx exporter",
       "separate app preview from final report export"
     ],
     "important_warning": "Do not let GPT perform hidden math that the program should calculate. GPT may interpret, explain, and advise, but the local engine should own repeatable calculations."
+  },
+  "seller_facing_report_standards_v1": {
+    "baseline_reference": "10006 Boca updated report format",
+    "preferred_report_order": [
+      "Recommended Range + Ruler Range",
+      "Comparable Sales",
+      "How the Value Was Determined",
+      "Market Momentum",
+      "Buyer Considerations",
+      "Strategy / Advisor Notes",
+      "Disclaimer"
+    ],
+    "ruler_range": {
+      "required": true,
+      "labels": [
+        "Market Support",
+        "Target Position",
+        "Market Opportunity"
+      ],
+      "formatting_rule": "Labels and dollar amounts must not overlap in the Word/docx output.",
+      "purpose": "Show the practical pricing lane, not a guaranteed result."
+    },
+    "days_in_mls_policy": {
+      "seller_facing_metric": "Average DIM / Average Days in MLS",
+      "do_not_use_in_seller_report": [
+        "Median DIM",
+        "Median Days in MLS"
+      ],
+      "reason": "Average DIM reflects real exposure time and matches how sellers think about likely market time."
+    },
+    "market_momentum_policy": {
+      "definition": "Momentum equals speed/activity of the market, not price.",
+      "do_not_include": [
+        "pricing",
+        "adjusted value",
+        "recommended list price"
+      ],
+      "include": [
+        "Active count",
+        "Pending count",
+        "Closed count",
+        "Monthly Sales Pace",
+        "Standard Months of Inventory",
+        "Average DIM"
+      ],
+      "labeling_rule": "Avoid confusing multiple MOI-style labels. If a momentum pressure metric is used, explain it clearly as a practical current-supply indicator, not standard appraisal MOI."
+    },
+    "adjustment_story_policy": {
+      "preferred_section_title": "How the Value Was Determined",
+      "use_story_not_spreadsheet": true,
+      "seller_facing_categories": [
+        "Above-Grade Living Area / Main Floor Space",
+        "Basement Contribution",
+        "Condition & Updates",
+        "Features & Layout"
+      ],
+      "seller_repeatable_lines": [
+        "Not all square footage is valued the same.",
+        "Basements add value, but not the same as main-floor space.",
+        "Buyers pay more for what feels finished.",
+        "How the home lives matters as much as size.",
+        "Price per square foot is a helpful reference, but buyers do not buy homes that way; they compare the whole property."
+      ],
+      "main_report_rule": "Do not show a long line-by-line adjustment spreadsheet in the seller-facing report unless specifically requested."
+    },
+    "micro_market_signal_policy": {
+      "include_when_available": [
+        "same-street sales",
+        "same-subdivision or enclave competition",
+        "active and pending competition",
+        "level/style comparison",
+        "search criteria used",
+        "count breakdowns by status"
+      ],
+      "purpose": "Help the Realtor explain why the selected market set is relevant and how live competition affects positioning."
+    },
+    "seller_facing_language_restrictions": {
+      "avoid_terms": [
+        "GPT",
+        "Realtor/GPT",
+        "payload",
+        "module",
+        "debug",
+        "API",
+        "reconciliation"
+      ],
+      "preferred_terms": [
+        "How the Value Was Determined",
+        "Market Evidence Summary",
+        "Pricing Basis",
+        "Value Positioning Summary"
+      ],
+      "rule": "The report should sound like the Realtor is presenting organized market evidence, not defending a price or exposing backend tools."
+    },
+    "disclaimer_policy": {
+      "section_title": "Disclaimer",
+      "paragraph_rule": "Keep the full disclaimer paragraph; only simplify the heading from Methodology & Disclaimer to Disclaimer."
+    }
   }
 }
