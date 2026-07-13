@@ -15,7 +15,7 @@ from typing import Optional
 from docx import Document
 
 
-_BOLD_RE = re.compile(r"\*\*(.*?)\*")
+_BOLD_RE = re.compile(r"\*\*(.*?)\*\*")
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 
 
