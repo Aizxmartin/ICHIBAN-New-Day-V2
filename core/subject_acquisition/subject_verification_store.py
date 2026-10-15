@@ -4,9 +4,16 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from core.session_workspace import scoped_data_path
+
 
 DEFAULT_OUTPUT_DIR = Path("data")
 DEFAULT_SUBJECT_FILE = DEFAULT_OUTPUT_DIR / "verified_subject.json"
+
+
+def _default_subject_file() -> Path:
+    """Workspace-scoped verified-subject path. Avoids shared global data leakage."""
+    return scoped_data_path("verified_subject.json")
 
 
 def save_verified_subject(
@@ -20,7 +27,7 @@ def save_verified_subject(
     the extracted subject facts.
     """
 
-    save_path = Path(output_path) if output_path else DEFAULT_SUBJECT_FILE
+    save_path = Path(output_path) if output_path else _default_subject_file()
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     cleaned_data = dict(subject_data)
@@ -40,7 +47,7 @@ def load_verified_subject(
     Returns None if no verified subject file exists.
     """
 
-    load_path = Path(input_path) if input_path else DEFAULT_SUBJECT_FILE
+    load_path = Path(input_path) if input_path else _default_subject_file()
 
     if not load_path.exists():
         return None
@@ -74,7 +81,7 @@ def clear_verified_subject(
     Returns True if a file was deleted.
     """
 
-    delete_path = Path(input_path) if input_path else DEFAULT_SUBJECT_FILE
+    delete_path = Path(input_path) if input_path else _default_subject_file()
 
     if delete_path.exists():
         delete_path.unlink()

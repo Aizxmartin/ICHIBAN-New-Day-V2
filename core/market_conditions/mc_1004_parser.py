@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import re
+import shutil
+import subprocess
+import tempfile
 
 from .mc_1004_coordinate_parser import parse_1004mc_coordinate_table
 
@@ -77,6 +80,89 @@ class MarketConditions1004MC:
         return asdict(self)
 
 
+
+def _ocr_pdf_first_page(path: Path) -> tuple[str, str]:
+    """Render page 1 and OCR it when the PDF contains a rasterized report.
+
+    Returns (text, method). This is an optional fallback: if Tesseract is not
+    installed, the caller receives an empty string and can offer manual entry.
+    """
+    if shutil.which("tesseract") is None:
+        return "", "ocr_unavailable_tesseract_missing"
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(str(path))
+        if len(doc) < 1:
+            return "", "ocr_no_pages"
+        page = doc[0]
+        # 3.0x is deliberate. At 2.2x, thin digits in the Matrix browser-print
+        # PDF (for example "91") can lose the leading digit during OCR.
+        pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), alpha=False)
+        with tempfile.TemporaryDirectory() as td:
+            image_path = Path(td) / "1004mc_page1.png"
+            pix.save(str(image_path))
+            proc = subprocess.run(
+                ["tesseract", str(image_path), "stdout", "--psm", "6"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return "", "ocr_tesseract_failed"
+            return proc.stdout or "", "tesseract_visual_table"
+    except Exception:
+        return "", "ocr_exception"
+
+
+def _parse_visual_ocr_table(text: str) -> Dict[str, Any]:
+    """Parse OCR text where each 1004MC row appears in visual left-to-right order."""
+    clean = re.sub(r"[ \t]+", " ", text.replace("\u2019", "'").replace("\u2018", "'"))
+    values: Dict[str, Any] = {}
+
+    def row(pattern: str, count: int = 3):
+        m = re.search(pattern + r"\s+([^\n]+)", clean, flags=re.IGNORECASE)
+        if not m:
+            return []
+        tokens = re.findall(r"\$?[\d,]+(?:\.\d+)?%?", m.group(1))
+        return tokens[:count]
+
+    rows = {
+        "sales": row(r"Total\s*#\s*of\s*Comparable\s*Sales\s*\(Settled\)"),
+        "absorption": row(r"Absorption\s*Rate\s*\(Total\s*Sales/Months\)"),
+        "active": row(r"Total\s*#\s*of\s*Comparable\s*Active\s*Listings"),
+        # Matrix browser-print OCR may drop the closing parenthesis after
+        # "Lst/Ab. Rate". Stop at either the closing parenthesis or the word
+        # Rate so the three numeric values remain available to the row parser.
+        "supply": row(
+            r"Months\s*of\s*Housing\s*Supply(?:\s*\([^\n]*?(?:\)|Rate))?"
+        ),
+        "close": row(r"Median\s*Comparable\s*Close\s*Price"),
+        "sales_dim": row(r"Median\s*Comparable\s*Sales\s*DIM"),
+        "list": row(r"Median\s*Comparable\s*List\s*Price\s*\(Listings\s*Only\)"),
+        "list_dim": row(r"Median\s*Comparable\s*Listings\s*DIM\s*\(Listings\s*Only\)"),
+        "ratio": row(r"Median\s*Sale\s*Price\s*/\s*Median\s*List\s*Price\s*%"),
+    }
+    periods = ["prior_7_12", "prior_4_6", "current_3"]
+    field_map = {
+        "sales": "sales", "absorption": "absorption_rate", "active": "active_listings",
+        "supply": "months_supply", "close": "median_close_price", "sales_dim": "median_sales_dim",
+        "list": "median_list_price", "list_dim": "median_listings_dim",
+        "ratio": "median_sale_to_list_price_pct",
+    }
+    integer_rows = {"sales", "active", "close", "sales_dim", "list", "list_dim"}
+    for row_name, tokens in rows.items():
+        if len(tokens) < 3:
+            continue
+        for period, token in zip(periods, tokens):
+            token = token.replace("$", "").replace(",", "").replace("%", "")
+            try:
+                value = int(round(float(token))) if row_name in integer_rows else float(token)
+            except ValueError:
+                continue
+            values[f"{period}_{field_map[row_name]}"] = value
+    return values
+
 def parse_1004mc_pdf(file_path: str | Path) -> MarketConditions1004MC:
     """
     Parse or diagnose a 1004MC PDF.
@@ -142,12 +228,46 @@ def parse_1004mc_pdf(file_path: str | Path) -> MarketConditions1004MC:
 
         return result
 
-    result.recommended_route = "manual_1004mc_entry"
+    # Browser "Print PDF" exports often contain the actual report as a full-page
+    # raster image plus only browser header/footer text. Try a visual OCR fallback.
+    ocr_text, ocr_method = _ocr_pdf_first_page(path)
+    ocr_values = _parse_visual_ocr_table(ocr_text) if ocr_text else {}
+    core_ocr_keys = {
+        f"{period}_{field}"
+        for period in ("prior_7_12", "prior_4_6", "current_3")
+        for field in (
+            "sales",
+            "absorption_rate",
+            "active_listings",
+            "months_supply",
+            "median_close_price",
+            "median_sales_dim",
+        )
+    }
+    core_table_complete = core_ocr_keys.issubset(ocr_values)
+
+    if core_table_complete:
+        _apply_values(result, ocr_values)
+        result.validation = _validate_ocr_values(ocr_values)
+        result.validation["core_table_complete"] = True
+        result.parser_method = ocr_method
+        result.raw_text_sample = ocr_text[:2500]
+        if result.validation.get("inventory_math_ok"):
+            result.recommended_route = "parsed_1004mc_ocr_table"
+            result.parser_confidence = "high"
+            result.warnings.append("1004MC was read from the visible page image because the embedded text layer did not contain the table.")
+        else:
+            result.recommended_route = "manual_review_required"
+            result.parser_confidence = "medium"
+            result.warnings.append("1004MC values were read by OCR, but inventory math requires review.")
+        return result
+
+    result.recommended_route = "manual_1004mc_entry_or_ocr"
     result.parser_confidence = "low"
-    result.parser_method = "coordinate_parse_failed"
+    result.parser_method = ocr_method if ocr_method else "coordinate_parse_failed"
     result.warnings.extend(coordinate_result.get("warnings", []))
     result.warnings.append(
-        "Text layer exists, but the 1004MC table could not be safely parsed by coordinates."
+        "The visible 1004MC table could not be read automatically. Use manual entry or install Tesseract OCR."
     )
     return result
 
@@ -243,3 +363,27 @@ def _clean_text(text: str) -> str:
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r"\n+", " ", text)
     return text.strip()
+
+def _validate_ocr_values(values: Dict[str, Any]) -> Dict[str, Any]:
+    checks: Dict[str, Any] = {"inventory_math_ok": True, "periods": {}}
+    months_map = {"prior_7_12": 6, "prior_4_6": 3, "current_3": 3}
+    for period, months in months_map.items():
+        sales = values.get(f"{period}_sales")
+        absorption = values.get(f"{period}_absorption_rate")
+        active = values.get(f"{period}_active_listings")
+        supply = values.get(f"{period}_months_supply")
+        period_ok = True
+        details: Dict[str, Any] = {}
+        if sales is not None and absorption not in (None, 0):
+            expected = round(float(sales) / months, 2)
+            ok = abs(expected - float(absorption)) <= 0.25
+            details["absorption"] = {"expected": expected, "actual": absorption, "ok": ok}
+            period_ok = period_ok and ok
+        if active is not None and absorption not in (None, 0) and supply is not None:
+            expected = round(float(active) / float(absorption), 2)
+            ok = abs(expected - float(supply)) <= 0.08
+            details["months_supply"] = {"expected": expected, "actual": supply, "ok": ok}
+            period_ok = period_ok and ok
+        checks["periods"][period] = details
+        checks["inventory_math_ok"] = checks["inventory_math_ok"] and period_ok
+    return checks

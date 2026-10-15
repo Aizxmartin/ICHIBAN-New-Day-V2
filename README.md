@@ -84,3 +84,8 @@ This is the correct sequence:
 4. Show subject verification screen
 5. Run valuation only after subject facts are verified
 ```
+
+## 1004MC browser-print PDF support
+Some REcolorado browser-print PDFs contain the report as a page image while the PDF text layer contains only browser headers and footers. ICHIBAN now attempts a visual OCR fallback and validates the extracted inventory math before accepting it.
+
+The OCR fallback requires the `tesseract` executable to be installed and available on PATH. Direct REcolorado PDF exports with a usable text layer remain preferred.

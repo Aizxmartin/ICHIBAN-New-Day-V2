@@ -1,0 +1,83 @@
+{
+  "document_name": "ICHIBAN Tarzan-First GPT Project Credo - Scope Lock / Separation Firewall",
+  "version": "v20.5.4G_SCOPE_LOCK",
+  "read_before": "Every initial Tarzan report generation and every programming change touching final report output, report routing, prompt building, valuation handoff, upload verification, or DOCX output.",
+  "active_output_mode": "TARZAN_FIRST_INITIAL_VALUATION",
+  "purpose": "Prevent GPT/report routing from confusing Tarzan and BBC. Tarzan is active; BBC, After Review, and Retrospect are paused.",
+  "mode_firewall": {
+    "one_active_mode_per_output": true,
+    "tarzan_active": true,
+    "bbc_paused": true,
+    "after_review_paused": true,
+    "retrospect_paused": true,
+    "combined_output_allowed": false,
+    "mixed_mode_instruction_behavior": "Warn and preserve Tarzan scope; do not generate BBC, After Review, Retrospect, or post-listing performance analysis."
+  },
+  "tarzan_job": [
+    "Produce detailed initial valuation report from existing evidence package.",
+    "Preserve comp math, comp selection, adjustment calculations, and engine-stamped statistics.",
+    "Separate evidence band from Recommended Market Entry Range.",
+    "Use closed comps as valuation support.",
+    "Use active/pending/failed listings as launch context and buyer-choice pressure only.",
+    "Use Market Momentum and MPI as market-pressure evidence, not valuation by themselves.",
+    "Carry Report Notes / Field Intelligence as context and verification prompts.",
+    "Return HUMAN REVIEW REQUIRED when material evidence requires confirmation."
+  ],
+  "tarzan_must_not": [
+    "Generate BBC seller voice.",
+    "Perform BBC reconciliation or BBC advisory override.",
+    "Activate After Review or Retrospect.",
+    "Perform post-listing performance review based on current list price, reductions, showings, offers, or DIM.",
+    "Change comp math or adjustment rules from the final report page.",
+    "Use active/pending listings as closed-price proof.",
+    "Silently use field intelligence to rewrite valuation math.",
+    "Bring back Agent Review Inputs or circle-a-number language unless separately requested as a worksheet."
+  ],
+  "bbc_future_role": {
+    "status": "PAUSED",
+    "role": "Future clear/proper explanation and advisory interpretation layer that follows Tarzan evidence.",
+    "allowed_later": [
+      "Explain what Tarzan found and why it matters.",
+      "List favorable evidence and caveats.",
+      "Read public/private remarks for valuation insight.",
+      "Agree with Tarzan, qualify Tarzan, shift posture within the Tarzan range, or recommend a separate advisory judgment when hard evidence supports it."
+    ],
+    "not_allowed_in_tarzan": "BBC output must not run during Tarzan-first report generation."
+  },
+  "matrix_constitution_alignment": [
+    "Matrix independent valuation is a separate control standard outside the running ICHIBAN program.",
+    "Matrix BBC-style explanation does not activate ICHIBAN BBC inside Tarzan-first output.",
+    "ICHIBAN control review is a later comparison/divergence process, not Tarzan report generation.",
+    "Correct failures at the lowest sufficient layer; do not burden BBC with defects belonging in Tarzan calculations, mapping, or renderer output."
+  ],
+  "mpi_boundary": {
+    "formula": "(Active Inventory + New Listings + Failed Listings) / Pendings",
+    "tarzan_use": "Calculate/report MPI when supported by 1004MC or market data. Use as market-pressure evidence only.",
+    "bbc_use_later": "Interpret MPI as posture/reconciliation signal when BBC is activated.",
+    "not_valuation_by_itself": true
+  },
+  "required_tarzan_sections": [
+    "Tarzan Valuation Range Snapshot",
+    "Recommended Market Entry Range",
+    "Target Position / Strategic List Posture",
+    "Ruler Range as Evidence Context",
+    "Closed Comparable Evidence",
+    "How the Value Was Determined",
+    "Current Competition / Active-Pending Context",
+    "Market Momentum / MPI",
+    "Buyer Considerations",
+    "Report Notes / Field Intelligence",
+    "Verification Notes",
+    "Final Tarzan Status"
+  ],
+  "programming_preflight_checks": [
+    "Confirm output_mode is TARZAN_FIRST_INITIAL_VALUATION.",
+    "Load Tarzan instruction map only.",
+    "Do not load BBC instruction map during Tarzan generation.",
+    "Confirm valuation package exists before report generation.",
+    "Confirm report payload mapping reads engine output rather than recalculating math.",
+    "If active subject snapshot exists, label as market-file subject context only unless After Review is explicitly activated.",
+    "If mixed-mode instructions are detected, warn and keep Tarzan scope."
+  ],
+  "final_creed": "Tarzan proves the evidence. BBC later explains it. The current output is Tarzan only. Do not combine modes, do not multitask across paused workflows, and do not let report generation damage valuation performance by drifting into BBC, After Review, or Retrospect."
+}

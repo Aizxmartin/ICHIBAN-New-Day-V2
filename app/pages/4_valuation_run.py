@@ -9,9 +9,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import streamlit as st
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from app.ui_theme import apply_ichiban_theme, ichiban_hero
 
 from core.subject_acquisition import load_verified_subject
 from core.market_conditions import load_verified_1004mc
@@ -23,8 +26,58 @@ st.set_page_config(
     layout="wide",
 )
 
+apply_ichiban_theme()
+
+
 st.title("Module 4 — Valuation Run")
-st.subheader("Run the valuation engine using the locked subject profile and normalized MLS data")
+st.subheader("Run valuation using the locked subject, valuation comps, and optional 1004MC / competition market evidence")
+
+
+# ---------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------
+
+STANDARD_REPORT_NAME = "Tarzan Valuation Analysis"
+DEFAULT_REPORT_TYPE = STANDARD_REPORT_NAME
+
+REPORT_LANGUAGE_RULE = (
+    "The value range is based on closed comparable evidence. The market momentum section reviews a broader "
+    "competitive pool to evaluate current inventory pressure, pending activity, recent sales pace, and market direction."
+)
+
+MARKET_WORKFLOW_RULE = {
+    "workflow_name": "1004MC / Competition Market File Rule",
+    "recommended_search": {
+        "lookback": "12-month lookback",
+        "property_type": "Single Family Residence when subject is Single Family",
+        "radius": "Approximately 3-mile radius, expandable to 3–5 miles if needed",
+        "price_band": "Approximately $100K below to $100K above projected range",
+        "square_footage": "Use established above-grade / main-upper-level SF range parameters",
+        "statuses": "Include Active, Pending, Closed, and optionally Expired/Withdrawn",
+        "levels": "Levels may include all levels for competition/momentum, but level differences must be tagged",
+    },
+    "file_roles": {
+        "valuation_comp_file": "Adjusted comps, Ruler Range, and recommended value range",
+        "competition_market_file": "Market pattern, absorption, current competition, projected MOI range, seller caveats, and momentum discussion",
+    },
+    "report_language_rule": REPORT_LANGUAGE_RULE,
+}
+
+
+# ---------------------------------------------------------------------
+# Locked report standard — intentionally outside any manual-entry section
+# ---------------------------------------------------------------------
+
+report_type = STANDARD_REPORT_NAME
+st.session_state["report_type_selection"] = STANDARD_REPORT_NAME
+
+st.info(
+    "Report standard: Tarzan Valuation Analysis. "
+    "The Valuation Comp File supports value; the 1004MC / Competition Market File supports market pattern, momentum, absorption, and seller caveats."
+)
+
+st.session_state["market_workflow_rule"] = MARKET_WORKFLOW_RULE
+st.session_state["report_language_rule"] = REPORT_LANGUAGE_RULE
 
 
 # ---------------------------------------------------------------------
@@ -103,19 +156,41 @@ def _load_subject_profile() -> Tuple[Dict[str, Any], bool, str]:
     return subject, subject_ready, source
 
 
-def _load_market_data() -> Tuple[Any, bool, str]:
+def _load_valuation_comp_data() -> Tuple[Any, bool, str]:
     """
-    Market data is currently still session-based because the normalized DataFrame
-    is created in Module 3 from the MLS upload.
+    Load the focused Valuation Comp File.
 
-    If this shows not ready, go back to Module 3 and upload the MLS file again.
+    During the transition from one generic market file to two file roles, legacy
+    session keys remain valid as fallbacks.
     """
 
-    market_df = st.session_state.get("market_data_normalized")
-    market_ready = market_df is not None
+    for key in [
+        "valuation_comp_data_normalized",
+        "valuation_file_df",
+        "market_data_normalized",
+    ]:
+        df = st.session_state.get(key)
+        if df is not None:
+            return df, True, f"session_state.{key}"
 
-    if market_ready:
-        return market_df, True, "session_state.market_data_normalized"
+    return None, False, "not_found"
+
+
+def _load_competition_market_data() -> Tuple[Any, bool, str]:
+    """
+    Load the broader 1004MC / Competition Market File.
+
+    This file is optional and must not replace the Valuation Comp File.
+    """
+
+    for key in [
+        "competition_market_data_normalized",
+        "market_pattern_data_normalized",
+        "momentum_file_df",
+    ]:
+        df = st.session_state.get(key)
+        if df is not None:
+            return df, True, f"session_state.{key}"
 
     return None, False, "not_found"
 
@@ -156,20 +231,44 @@ def _load_1004mc_summary() -> Tuple[Dict[str, Any], bool, str]:
     return summary, supplied, source
 
 
-def _market_row_count(market_df: Any) -> int:
-    if market_df is None:
+def _row_count(dataframe: Any) -> int:
+    if dataframe is None:
         return 0
 
     try:
-        return int(len(market_df))
+        return int(len(dataframe))
     except Exception:
         return 0
 
 
+def _df_has_closed_plus_active_or_pending(dataframe: Any) -> bool:
+    """Return True when one MLS file can support both comp value and competition review."""
+    if dataframe is None or not hasattr(dataframe, "columns"):
+        return False
+
+    status_col = None
+    for col in dataframe.columns:
+        normalized = str(col).strip().lower().replace(" ", "_")
+        if normalized in {"mls_status", "status", "standard_status"}:
+            status_col = col
+            break
+
+    if status_col is None:
+        return False
+
+    statuses = dataframe[status_col].fillna("").astype(str).str.lower().tolist()
+    has_closed = any(("closed" in s or "sold" in s or "settled" in s) for s in statuses)
+    has_active_or_pending = any(("active" in s or "coming soon" in s or "pending" in s or "under contract" in s) for s in statuses)
+
+    return bool(has_closed and has_active_or_pending)
+
+
 def _try_run_valuation_engine(
     subject_profile: Dict[str, Any],
-    market_data: Any,
+    valuation_comp_data: Any,
     one_hundred_four_mc_summary: Dict[str, Any],
+    competition_market_data: Any = None,
+    selected_report_type: str = DEFAULT_REPORT_TYPE,
 ) -> Dict[str, Any]:
     """
     Try to call the existing valuation engine without assuming the exact function name.
@@ -210,12 +309,26 @@ def _try_run_valuation_engine(
                 if "subject" in params:
                     kwargs["subject"] = subject_profile
 
+                # Legacy engine names receive the valuation comp file, not the broader competition file.
                 if "market_data" in params:
-                    kwargs["market_data"] = market_data
+                    kwargs["market_data"] = valuation_comp_data
                 if "market_df" in params:
-                    kwargs["market_df"] = market_data
+                    kwargs["market_df"] = valuation_comp_data
                 if "market_data_normalized" in params:
-                    kwargs["market_data_normalized"] = market_data
+                    kwargs["market_data_normalized"] = valuation_comp_data
+                if "valuation_comp_data" in params:
+                    kwargs["valuation_comp_data"] = valuation_comp_data
+                if "valuation_comp_df" in params:
+                    kwargs["valuation_comp_df"] = valuation_comp_data
+
+                if "competition_market_data" in params:
+                    kwargs["competition_market_data"] = competition_market_data
+                if "competition_market_df" in params:
+                    kwargs["competition_market_df"] = competition_market_data
+                if "market_pattern_data" in params:
+                    kwargs["market_pattern_data"] = competition_market_data
+                if "momentum_market_data" in params:
+                    kwargs["momentum_market_data"] = competition_market_data
 
                 if "one_hundred_four_mc_summary" in params:
                     kwargs["one_hundred_four_mc_summary"] = one_hundred_four_mc_summary
@@ -224,26 +337,35 @@ def _try_run_valuation_engine(
                 if "mc_1004" in params:
                     kwargs["mc_1004"] = one_hundred_four_mc_summary
 
+                if "report_type" in params:
+                    kwargs["report_type"] = selected_report_type
+                if "selected_report_type" in params:
+                    kwargs["selected_report_type"] = selected_report_type
+                if "market_workflow_rule" in params:
+                    kwargs["market_workflow_rule"] = MARKET_WORKFLOW_RULE
+
                 if kwargs:
                     output = func(**kwargs)
                 else:
-                    output = func(subject_profile, market_data, one_hundred_four_mc_summary)
+                    output = func(subject_profile, valuation_comp_data, one_hundred_four_mc_summary)
 
                 return {
                     "engine_status": "success",
                     "engine_module": module_name,
                     "engine_function": function_name,
+                    "report_type": selected_report_type,
                     "engine_output": _json_safe(output),
                 }
 
             except TypeError:
-                # Try common positional signature.
+                # Try common positional signature for older engine versions.
                 try:
-                    output = func(subject_profile, market_data, one_hundred_four_mc_summary)
+                    output = func(subject_profile, valuation_comp_data, one_hundred_four_mc_summary)
                     return {
                         "engine_status": "success",
                         "engine_module": module_name,
                         "engine_function": function_name,
+                        "report_type": selected_report_type,
                         "engine_output": _json_safe(output),
                     }
                 except Exception as exc:
@@ -258,15 +380,19 @@ def _try_run_valuation_engine(
     return {
         "engine_status": "no_engine_function_found",
         "message": (
-            "Module 4 successfully loaded the verified subject, market data, and 1004MC evidence, "
-            "but no compatible valuation engine function was found yet."
+            "Module 4 successfully loaded the verified subject, valuation comp data, optional 1004MC evidence, "
+            "and optional 1004MC / competition market data, but no compatible valuation engine function was found yet."
         ),
         "attempted_engine_functions": candidates,
         "errors": last_errors[-10:],
         "valuation_input_package": {
+            "report_type": selected_report_type,
             "subject_profile": _json_safe(subject_profile),
-            "market_rows": _market_row_count(market_data),
+            "valuation_comp_rows": _row_count(valuation_comp_data),
+            "competition_market_rows": _row_count(competition_market_data),
             "one_hundred_four_mc_summary": _json_safe(one_hundred_four_mc_summary),
+            "market_workflow_rule": MARKET_WORKFLOW_RULE,
+            "report_language_rule": REPORT_LANGUAGE_RULE,
         },
     }
 
@@ -276,27 +402,55 @@ def _try_run_valuation_engine(
 # ---------------------------------------------------------------------
 
 subject_profile, subject_ready, subject_source = _load_subject_profile()
-market_data, market_ready, market_source = _load_market_data()
+valuation_comp_data, valuation_comp_ready, valuation_comp_source = _load_valuation_comp_data()
+competition_market_data, competition_market_ready, competition_market_source = _load_competition_market_data()
+
+if (
+    not competition_market_ready
+    and valuation_comp_ready
+    and _df_has_closed_plus_active_or_pending(valuation_comp_data)
+):
+    competition_market_data = valuation_comp_data
+    competition_market_ready = True
+    competition_market_source = f"inferred_from_{valuation_comp_source}"
+    st.session_state["competition_market_data_normalized"] = valuation_comp_data
+    st.session_state["momentum_file_df"] = valuation_comp_data
+    st.session_state["use_same_file_for_momentum"] = True
+
 one_hundred_four_mc_summary, mc_supplied, mc_source = _load_1004mc_summary()
 
-market_inspection = st.session_state.get("market_inspection") or {}
+valuation_comp_inspection = (
+    st.session_state.get("valuation_comp_inspection")
+    or st.session_state.get("valuation_market_inspection")
+    or st.session_state.get("market_inspection")
+    or {}
+)
+competition_market_inspection = (
+    st.session_state.get("competition_market_inspection")
+    or st.session_state.get("market_pattern_inspection")
+    or st.session_state.get("momentum_market_inspection")
+    or {}
+)
+market_file_roles = st.session_state.get("market_file_roles") or {}
 
 
 # ---------------------------------------------------------------------
 # Status metrics
 # ---------------------------------------------------------------------
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
 c1.metric("Subject ready", str(subject_ready))
-c2.metric("Market data ready", str(market_ready))
-c3.metric("1004MC supplied", str(mc_supplied))
+c2.metric("Valuation comps ready", str(valuation_comp_ready))
+c3.metric("1004MC / competition file", str(competition_market_ready))
+c4.metric("1004MC trend supplied", str(mc_supplied))
 
-detail1, detail2, detail3 = st.columns(3)
+detail1, detail2, detail3, detail4 = st.columns(4)
 
 detail1.caption(f"Subject source: {subject_source}")
-detail2.caption(f"Market source: {market_source}")
-detail3.caption(f"1004MC source: {mc_source}")
+detail2.caption(f"Valuation comps source: {valuation_comp_source}")
+detail3.caption(f"Competition source: {competition_market_source}")
+detail4.caption(f"1004MC source: {mc_source}")
 
 
 # ---------------------------------------------------------------------
@@ -306,10 +460,27 @@ detail3.caption(f"1004MC source: {mc_source}")
 if not subject_ready:
     st.warning("Subject profile is not ready. Complete Module 2 first.")
 
-if not market_ready:
+if not valuation_comp_ready:
     st.warning(
-        "Market data is not ready. Complete Module 3 first. "
-        "If you restarted Streamlit, re-upload the MLS market file in Module 3."
+        "Valuation comp data is not ready. Complete Module 3 first. "
+        "If you restarted Streamlit, re-upload the Comparable Sales / Valuation File in Module 3."
+    )
+
+if competition_market_ready:
+    if str(competition_market_source).startswith("inferred_from_"):
+        st.success(
+            "Same MLS file inferred for 1004MC / Competition review. It contains closed plus active/pending evidence, "
+            "so it can support market pattern, absorption, current competition, projected MOI range, seller caveats, and momentum discussion."
+        )
+    else:
+        st.success(
+            "1004MC / Competition Market File loaded. It can support market pattern, absorption, "
+            "current competition, projected MOI range, seller caveats, and momentum discussion."
+        )
+else:
+    st.info(
+        "No broader 1004MC / Competition Market File supplied. The value range can still run from closed comps, "
+        "but current competition, absorption, and momentum should be limited or caveated."
     )
 
 if mc_supplied:
@@ -318,13 +489,17 @@ if mc_supplied:
     trend = one_hundred_four_mc_summary.get("market_trend_classification", "not_supplied")
 
     st.success(
-        f"1004MC evidence loaded. Annual trend: "
+        f"1004MC time-trend evidence loaded. Annual trend: "
         f"{'—' if annual is None else str(annual) + '%'} | "
         f"Monthly trend: {'—' if monthly is None else str(monthly) + '%'} | "
         f"Trend class: {trend}"
     )
 else:
-    st.info("No verified 1004MC evidence supplied. This is optional.")
+    st.info("No verified 1004MC PDF/manual time-trend evidence supplied. This is optional.")
+
+with st.container(border=True):
+    st.markdown("### File-role rule for report logic")
+    st.write(REPORT_LANGUAGE_RULE)
 
 
 # ---------------------------------------------------------------------
@@ -337,26 +512,47 @@ with st.expander("Verified subject profile", expanded=False):
     else:
         st.caption("No subject profile loaded.")
 
-with st.expander("Market data handoff", expanded=False):
+with st.expander("Valuation Comp File handoff", expanded=False):
     st.write(
         {
-            "market_ready": market_ready,
-            "market_rows": _market_row_count(market_data),
-            "market_inspection": _json_safe(market_inspection),
+            "valuation_comp_ready": valuation_comp_ready,
+            "valuation_comp_rows": _row_count(valuation_comp_data),
+            "valuation_comp_inspection": _json_safe(valuation_comp_inspection),
+            "used_for": MARKET_WORKFLOW_RULE["file_roles"]["valuation_comp_file"],
         }
     )
 
-    if market_ready:
+    if valuation_comp_ready:
         try:
-            st.dataframe(market_data.head(25), width="stretch")
+            st.dataframe(valuation_comp_data.head(25), width="stretch")
         except Exception:
-            st.write("Market data exists but could not be previewed as a dataframe.")
+            st.write("Valuation comp data exists but could not be previewed as a dataframe.")
+
+with st.expander("1004MC / Competition Market File handoff", expanded=False):
+    st.write(
+        {
+            "competition_market_ready": competition_market_ready,
+            "competition_market_rows": _row_count(competition_market_data),
+            "competition_market_inspection": _json_safe(competition_market_inspection),
+            "used_for": MARKET_WORKFLOW_RULE["file_roles"]["competition_market_file"],
+            "recommended_search": MARKET_WORKFLOW_RULE["recommended_search"],
+        }
+    )
+
+    if competition_market_ready:
+        try:
+            st.dataframe(competition_market_data.head(25), width="stretch")
+        except Exception:
+            st.write("Competition market data exists but could not be previewed as a dataframe.")
 
 with st.expander("1004MC / time-trend evidence", expanded=False):
     if one_hundred_four_mc_summary:
         st.json(_json_safe(one_hundred_four_mc_summary))
     else:
-        st.caption("No 1004MC evidence loaded.")
+        st.caption("No 1004MC PDF/manual time-trend evidence loaded.")
+
+with st.expander("Market workflow rule", expanded=False):
+    st.json(_json_safe(MARKET_WORKFLOW_RULE))
 
 
 # ---------------------------------------------------------------------
@@ -364,11 +560,31 @@ with st.expander("1004MC / time-trend evidence", expanded=False):
 # ---------------------------------------------------------------------
 
 valuation_input_package = {
+    "report_type": report_type,
     "subject_profile": _json_safe(subject_profile),
-    "market_rows": _market_row_count(market_data),
-    "market_inspection": _json_safe(market_inspection),
+    "valuation_comp_file": {
+        "ready": valuation_comp_ready,
+        "rows": _row_count(valuation_comp_data),
+        "source": valuation_comp_source,
+        "inspection": _json_safe(valuation_comp_inspection),
+        "used_for": MARKET_WORKFLOW_RULE["file_roles"]["valuation_comp_file"],
+    },
+    "competition_market_file": {
+        "ready": competition_market_ready,
+        "rows": _row_count(competition_market_data),
+        "source": competition_market_source,
+        "inspection": _json_safe(competition_market_inspection),
+        "used_for": MARKET_WORKFLOW_RULE["file_roles"]["competition_market_file"],
+    },
+    "market_rows": _row_count(valuation_comp_data),
+    "market_inspection": _json_safe(valuation_comp_inspection),
+    "market_file_roles": _json_safe(market_file_roles),
     "one_hundred_four_mc_summary": _json_safe(one_hundred_four_mc_summary),
+    "market_workflow_rule": MARKET_WORKFLOW_RULE,
+    "report_language_rule": REPORT_LANGUAGE_RULE,
 }
+
+st.session_state["valuation_input_package"] = valuation_input_package
 
 if st.button("Save Valuation Input Package"):
     saved_path = _save_json("data/valuation_input_package.json", valuation_input_package)
@@ -381,15 +597,17 @@ if st.button("Save Valuation Input Package"):
 
 st.divider()
 
-if subject_ready and market_ready:
-    st.success("Ready to run valuation.")
+if subject_ready and valuation_comp_ready:
+    st.success("Ready to run valuation from the Valuation Comp File.")
 
     if st.button("Run Valuation Engine", type="primary"):
         with st.spinner("Running valuation engine..."):
             result = _try_run_valuation_engine(
                 subject_profile=subject_profile,
-                market_data=market_data,
+                valuation_comp_data=valuation_comp_data,
                 one_hundred_four_mc_summary=one_hundred_four_mc_summary,
+                competition_market_data=competition_market_data,
+                selected_report_type=report_type,
             )
 
         st.session_state["valuation_engine_result"] = result

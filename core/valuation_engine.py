@@ -8,7 +8,7 @@ import re
 import pandas as pd
 
 
-ENGINE_VERSION = "valuation_engine_v2b_subject_sqft_safety_pre_api"
+ENGINE_VERSION = "valuation_engine_v2c_market_acceptance_price_sensitivity"
 
 
 ADJUSTMENT_RATES = {
@@ -51,14 +51,27 @@ COLUMN_ALIASES = {
         "originalprice",
         "original price",
     ],
+    "previous_list_price": [
+        "previouslistprice",
+        "previous list price",
+        "previousprice",
+        "previous price",
+    ],
     "concessions": [
-        "concessions",
+        "Concessions Amount",
+        "concessionsamount",
+        "concessions amount",
+        "sellerconcessionsamount",
+        "seller concessions amount",
+        "seller concession amount",
+        "seller concession",
         "sellerconcessions",
         "seller concessions",
-        "closingcosts",
-        "closing costs",
         "sellerpaidclosingcosts",
         "seller paid closing costs",
+        "closingcosts",
+        "closing costs",
+        "concessions",
     ],
 
     # MLS square-footage safety rule:
@@ -115,6 +128,14 @@ COLUMN_ALIASES = {
         "unfinishedbasementsqft",
         "unfinished basement sqft",
         "unfinished basement sf",
+    ],
+    "basement_description": [
+        "Basement",
+        "basement",
+        "basement description",
+        "basementdescription",
+        "basement details",
+        "basementdetails",
     ],
     "year_built": [
         "yearbuilt",
@@ -241,6 +262,8 @@ def run_valuation_engine(
     subject_profile: Dict[str, Any],
     market_data: Any,
     one_hundred_four_mc_summary: Optional[Dict[str, Any]] = None,
+    competition_market_data: Any = None,
+    report_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     ICHIBAN INSIGHT Valuation Engine v2B.
@@ -260,6 +283,28 @@ def run_valuation_engine(
     """
 
     one_hundred_four_mc_summary = one_hundred_four_mc_summary or {}
+    report_type = "Tarzan Valuation Analysis"
+
+    market_workflow_rule = {
+        "workflow_name": "1004MC / Competition Market File Rule",
+        "recommended_search": {
+            "lookback": "12-month lookback",
+            "property_type": "Single Family Residence when subject is Single Family",
+            "radius": "Approximately 3-mile radius, expandable to 3–5 miles if needed",
+            "price_band": "Approximately $100K below to $100K above projected range",
+            "square_footage": "Use established above-grade / main-upper-level SF range parameters",
+            "statuses": "Include Active, Pending, Closed, and optionally Expired/Withdrawn",
+            "levels": "Levels may include all levels for competition/momentum, but level differences must be tagged",
+        },
+        "file_roles": {
+            "valuation_comp_file": "Adjusted comps, Ruler Range, and recommended value range",
+            "competition_market_file": "Market pattern, absorption, current competition, projected MOI range, seller caveats, and momentum discussion",
+        },
+        "report_language_rule": (
+            "The value range is based on closed comparable evidence. The market momentum section reviews a broader "
+            "competitive pool to evaluate current inventory pressure, pending activity, recent sales pace, and market direction."
+        ),
+    }
 
     warnings: List[str] = []
     notes: List[str] = []
@@ -294,6 +339,7 @@ def run_valuation_engine(
     all_prepared_df = prepared["all_prepared_df"]
     closed_df = prepared["closed_df"]
     comp_candidates_df = prepared["comp_candidates_df"]
+    subject_market_snapshot = _detect_subject_market_snapshot(subject, all_prepared_df)
 
     if comp_candidates_df.empty:
         return {
@@ -302,6 +348,7 @@ def run_valuation_engine(
             "reason": "No usable closed comparable sales were available after preparation.",
             "subject_summary": subject,
             "column_map": column_map,
+            "subject_market_snapshot": subject_market_snapshot,
             "market_rows_loaded": int(len(df)),
             "closed_rows_available": int(len(closed_df)),
             "warnings": warnings,
@@ -329,16 +376,76 @@ def run_valuation_engine(
 
     comp_statistics = _calculate_comp_statistics(selected_df)
 
-    market_momentum = _calculate_limited_market_momentum(
-        all_prepared_df=all_prepared_df,
-        column_map=column_map,
-        notes=notes,
-    )
+    competition_rows_loaded = 0
+    competition_market_supplied = competition_market_data is not None
+
+    if competition_market_supplied:
+        competition_df = _as_dataframe(competition_market_data)
+        competition_rows_loaded = int(len(competition_df)) if competition_df is not None else 0
+    else:
+        competition_df = pd.DataFrame()
+
+    if competition_market_supplied and not competition_df.empty:
+        competition_column_map = _detect_columns(competition_df)
+        competition_notes: List[str] = []
+        competition_warnings: List[str] = []
+        competition_prepared = _prepare_market_dataframe(
+            df=competition_df,
+            column_map=competition_column_map,
+            subject=subject,
+            warnings=competition_warnings,
+            notes=competition_notes,
+        )
+        market_momentum = _calculate_limited_market_momentum(
+            all_prepared_df=competition_prepared["all_prepared_df"],
+            column_map=competition_column_map,
+            notes=notes,
+        )
+        market_momentum.update(
+            {
+                "status": "broader_competition_file_supplied",
+                "source": "1004MC / Competition Market File",
+                "competition_market_rows_loaded": competition_rows_loaded,
+                "valuation_boundary": market_workflow_rule["report_language_rule"],
+                "recommended_search_rule": market_workflow_rule["recommended_search"],
+                "important_limitation": (
+                    "The 1004MC / Competition Market File supports market pattern, absorption, current competition, projected MOI range, "
+                    "seller caveats, and momentum discussion. It does not replace the Valuation Comp File for adjusted closed-comp value support."
+                ),
+            }
+        )
+        price_sensitivity_and_seller_net_behavior = _calculate_price_sensitivity_and_seller_net_behavior(
+            all_prepared_df=competition_prepared["all_prepared_df"],
+            source_label="1004MC / Competition Market File",
+        )
+        market_momentum["price_sensitivity_summary"] = price_sensitivity_and_seller_net_behavior.get("summary_for_momentum")
+        if competition_notes:
+            notes.extend([f"Competition market file: {note}" for note in competition_notes])
+    else:
+        market_momentum = _calculate_limited_market_momentum(
+            all_prepared_df=all_prepared_df,
+            column_map=column_map,
+            notes=notes,
+        )
+        market_momentum.update(
+            {
+                "valuation_boundary": market_workflow_rule["report_language_rule"],
+                "recommended_competition_file": market_workflow_rule["recommended_search"],
+            }
+        )
+        price_sensitivity_and_seller_net_behavior = _calculate_price_sensitivity_and_seller_net_behavior(
+            all_prepared_df=all_prepared_df,
+            source_label="Valuation Comp File fallback",
+        )
+        market_momentum["price_sensitivity_summary"] = price_sensitivity_and_seller_net_behavior.get("summary_for_momentum")
 
     result = {
         "engine_version": ENGINE_VERSION,
         "engine_status": "success",
         "engine_scope": "pre_api_selected_comparable_evidence",
+        "report_type": report_type,
+        "market_workflow_rule": market_workflow_rule,
+        "market_file_roles": market_workflow_rule["file_roles"],
         "important_boundary_note": (
             "This pre-API engine selects and adjusts comparable evidence. "
             "It does not create the final GPT-qualified Market Entry Range. "
@@ -348,14 +455,18 @@ def run_valuation_engine(
         "subject_summary": subject,
         "adjustment_rates": ADJUSTMENT_RATES,
         "market_rows_loaded": int(len(df)),
+        "valuation_comp_rows_loaded": int(len(df)),
+        "competition_market_rows_loaded": competition_rows_loaded,
         "closed_rows_available": int(len(closed_df)),
         "comp_rows_scored": int(len(adjusted_df)),
         "comp_rows_selected": int(len(selected_df)),
         "column_map": column_map,
+        "subject_market_snapshot": subject_market_snapshot,
         "online_estimated_value": online_estimated_value,
         "selected_comparable_evidence_range": selected_comparable_evidence_range,
         "comp_statistics": comp_statistics,
         "market_momentum_and_buyer_competition": market_momentum,
+        "price_sensitivity_and_seller_net_behavior": price_sensitivity_and_seller_net_behavior,
         "market_conditions_1004mc": _summarize_1004mc(one_hundred_four_mc_summary),
         "selected_adjusted_comps": _build_adjusted_comp_records(selected_df),
         "all_scored_comps_preview": _build_adjusted_comp_records(adjusted_df.head(15)),
@@ -642,6 +753,71 @@ def _detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
     return detected
 
 
+def _remarks_suggest_finished_basement(text: Any) -> bool:
+    raw = str(text or "").lower()
+    if not raw:
+        return False
+
+    has_basement_signal = "basement" in raw or "walkout" in raw or "walk-out" in raw
+    has_finished_signal = re.search(r"(?<!un)finished", raw) is not None or "partially finish" in raw
+    has_only_unfinished_signal = "unfinished basement" in raw and not has_finished_signal
+
+    return bool(has_basement_signal and has_finished_signal and not has_only_unfinished_signal)
+
+
+def _infer_finished_basement_from_living_area_and_remarks(row: pd.Series) -> Tuple[Optional[float], bool]:
+    direct_finished = _to_number(row.get("_finished_basement_sqft"))
+    if direct_finished is not None and direct_finished > 0:
+        return direct_finished, False
+
+    living_area = _to_number(row.get("_living_area"))
+    above_grade = _to_number(row.get("_above_grade_sqft"))
+
+    if living_area is None or above_grade is None:
+        return direct_finished, False
+
+    inferred = living_area - above_grade
+    if inferred <= 100:
+        return direct_finished, False
+
+    remarks_text = " ".join(
+        str(row.get(key) or "")
+        for key in ["_basement_description", "_public_remarks", "_broker_remarks"]
+    )
+
+    if not _remarks_suggest_finished_basement(remarks_text):
+        return direct_finished, False
+
+    # Keep inference inside normal basement-size guardrails to avoid total-area mistakes.
+    if inferred > 4000:
+        return direct_finished, False
+
+    return inferred, True
+
+
+def _derive_total_basement_after_finished_inference(
+    basement_total: Any,
+    finished_basement: Any,
+    unfinished_basement: Any,
+) -> Optional[float]:
+    basement_total_num = _to_number(basement_total)
+    finished_num = _to_number(finished_basement)
+    unfinished_num = _to_number(unfinished_basement)
+
+    if basement_total_num is not None:
+        if finished_num is not None and finished_num > basement_total_num and unfinished_num:
+            return finished_num + unfinished_num
+        return basement_total_num
+
+    if finished_num is not None and unfinished_num is not None:
+        return finished_num + unfinished_num
+
+    if finished_num is not None:
+        return finished_num
+
+    return None
+
+
 def _prepare_market_dataframe(
     df: pd.DataFrame,
     column_map: Dict[str, Optional[str]],
@@ -654,6 +830,7 @@ def _prepare_market_dataframe(
     close_col = column_map.get("close_price")
     list_col = column_map.get("list_price")
     original_list_col = column_map.get("original_list_price")
+    previous_list_col = column_map.get("previous_list_price")
     concessions_col = column_map.get("concessions")
     ag_col = column_map.get("above_grade_sqft")
     living_area_col = column_map.get("living_area")
@@ -661,6 +838,7 @@ def _prepare_market_dataframe(
     basement_col = column_map.get("basement_sqft")
     finished_basement_col = column_map.get("finished_basement_sqft")
     unfinished_basement_col = column_map.get("unfinished_basement_sqft")
+    basement_description_col = column_map.get("basement_description")
     status_col = column_map.get("status")
     year_col = column_map.get("year_built")
     close_date_col = column_map.get("close_date")
@@ -691,6 +869,11 @@ def _prepare_market_dataframe(
         working["_original_list_price"] = working[original_list_col].apply(_to_number)
     else:
         working["_original_list_price"] = working["_list_price"]
+
+    if previous_list_col:
+        working["_previous_list_price"] = working[previous_list_col].apply(_to_number)
+    else:
+        working["_previous_list_price"] = None
 
     if concessions_col:
         working["_concessions"] = working[concessions_col].apply(_to_number).fillna(0)
@@ -733,6 +916,46 @@ def _prepare_market_dataframe(
         working["_unfinished_basement_sqft"] = working[unfinished_basement_col].apply(_to_number)
     else:
         working["_unfinished_basement_sqft"] = None
+
+    if basement_description_col:
+        working["_basement_description"] = working[basement_description_col].astype(str)
+    else:
+        working["_basement_description"] = ""
+
+    if public_remarks_col:
+        working["_public_remarks"] = working[public_remarks_col].astype(str)
+    else:
+        working["_public_remarks"] = ""
+
+    if broker_remarks_col:
+        working["_broker_remarks"] = working[broker_remarks_col].astype(str)
+    else:
+        working["_broker_remarks"] = ""
+
+    working["_finished_basement_inferred"] = False
+    inferred_finished_values = []
+    inferred_flags = []
+    for _idx, row in working.iterrows():
+        inferred_value, inferred_flag = _infer_finished_basement_from_living_area_and_remarks(row)
+        inferred_finished_values.append(inferred_value)
+        inferred_flags.append(inferred_flag)
+    working["_finished_basement_sqft"] = inferred_finished_values
+    working["_finished_basement_inferred"] = inferred_flags
+
+    inferred_count = int(sum(1 for flag in inferred_flags if flag))
+    if inferred_count:
+        notes.append(
+            f"Inferred finished basement square footage for {inferred_count} row(s) where Below Grade Finished Area was blank/zero but Living Area exceeded Above Grade Finished Area and remarks indicated a finished basement. Agent verification required."
+        )
+
+    working["_basement_sqft"] = working.apply(
+        lambda row: _derive_total_basement_after_finished_inference(
+            row.get("_basement_sqft"),
+            row.get("_finished_basement_sqft"),
+            row.get("_unfinished_basement_sqft"),
+        ),
+        axis=1,
+    )
 
     working["_unfinished_basement_sqft"] = working.apply(
         lambda row: _derive_unfinished_basement(
@@ -787,16 +1010,6 @@ def _prepare_market_dataframe(
         working["_association_fee_total_annual"] = working[association_fee_col].apply(_to_number)
     else:
         working["_association_fee_total_annual"] = None
-
-    if public_remarks_col:
-        working["_public_remarks"] = working[public_remarks_col].astype(str)
-    else:
-        working["_public_remarks"] = ""
-
-    if broker_remarks_col:
-        working["_broker_remarks"] = working[broker_remarks_col].astype(str)
-    else:
-        working["_broker_remarks"] = ""
 
     if status_col:
         working["_status_text"] = working[status_col].astype(str).str.lower()
@@ -1271,6 +1484,286 @@ def _calculate_comp_statistics(selected_df: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
+
+def _is_closed_status_series(status: pd.Series) -> pd.Series:
+    status = status.fillna("").astype(str).str.lower().str.strip()
+    return (
+        status.str.contains("closed", na=False)
+        | status.str.contains("sold", na=False)
+        | status.str.contains("settled", na=False)
+    )
+
+
+def _is_pending_status_series(status: pd.Series) -> pd.Series:
+    status = status.fillna("").astype(str).str.lower().str.strip()
+    closed_mask = _is_closed_status_series(status)
+    return (
+        (
+            status.str.contains("pending", na=False)
+            | status.str.contains("under contract", na=False)
+        )
+        & ~closed_mask
+    )
+
+
+def _is_active_status_series(status: pd.Series) -> pd.Series:
+    status = status.fillna("").astype(str).str.lower().str.strip()
+    closed_mask = _is_closed_status_series(status)
+    pending_mask = _is_pending_status_series(status)
+    coming_soon_mask = status.str.contains("coming soon", na=False) & ~pending_mask & ~closed_mask
+    return (
+        status.str.contains("active", na=False)
+        & ~pending_mask
+        & ~closed_mask
+        & ~coming_soon_mask
+    )
+
+
+def _pct(part: Optional[float], whole: Optional[float]) -> Optional[float]:
+    if not whole:
+        return None
+    try:
+        return round((float(part or 0) / float(whole)) * 100.0, 1)
+    except Exception:
+        return None
+
+
+def _round_currency_or_none(value: Any) -> Optional[int]:
+    try:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return None
+        return int(round(float(value)))
+    except Exception:
+        return None
+
+
+def _format_price_sensitivity_level(reduction_rate: Optional[float], net_below_rate: Optional[float], concession_rate: Optional[float], dim_gap: Optional[float]) -> str:
+    """Classify market acceptance pressure without forcing an automatic price cut."""
+    score = 0
+    if reduction_rate is not None:
+        if reduction_rate >= 55:
+            score += 2
+        elif reduction_rate >= 40:
+            score += 1
+    if net_below_rate is not None:
+        if net_below_rate >= 75:
+            score += 2
+        elif net_below_rate >= 60:
+            score += 1
+    if concession_rate is not None:
+        if concession_rate >= 60:
+            score += 2
+        elif concession_rate >= 40:
+            score += 1
+    if dim_gap is not None:
+        if dim_gap >= 35:
+            score += 2
+        elif dim_gap >= 20:
+            score += 1
+
+    if score >= 6:
+        return "Strong price sensitivity / repositioning review recommended if early buyer activity is weak"
+    if score >= 4:
+        return "Moderate price sensitivity / monitor early activity closely"
+    if score >= 2:
+        return "Mild price sensitivity / market acceptance should be watched"
+    return "Low price sensitivity signal from available data"
+
+
+def _calculate_price_reduction_metrics(rows: pd.DataFrame) -> Dict[str, Any]:
+    if rows is None or rows.empty:
+        return {
+            "count": 0,
+            "price_reduction_count": 0,
+            "price_reduction_rate_percent": None,
+            "average_reduction_amount_when_reduced": None,
+            "median_reduction_amount_when_reduced": None,
+            "average_dim_reduced": None,
+            "average_dim_not_reduced": None,
+        }
+
+    working = rows.copy()
+    if "_list_price" not in working.columns or "_original_list_price" not in working.columns:
+        return {"count": int(len(working)), "status": "missing_list_or_original_list_price"}
+
+    working["_price_reduction_amount"] = working["_original_list_price"] - working["_list_price"]
+    reduced = working[working["_price_reduction_amount"] > 0].copy()
+    not_reduced = working[~(working["_price_reduction_amount"] > 0)].copy()
+
+    reduced_amounts = _clean_numeric_list(reduced["_price_reduction_amount"].tolist()) if not reduced.empty else []
+
+    return {
+        "count": int(len(working)),
+        "price_reduction_count": int(len(reduced)),
+        "price_reduction_rate_percent": _pct(len(reduced), len(working)),
+        "average_reduction_amount_when_reduced": _round_currency_or_none(_average(reduced_amounts)),
+        "median_reduction_amount_when_reduced": _round_currency_or_none(pd.Series(reduced_amounts).median()) if reduced_amounts else None,
+        "average_dim_reduced": _round_number(_average(_clean_numeric_list(reduced["_days_in_mls"].tolist()))) if not reduced.empty and "_days_in_mls" in reduced.columns else None,
+        "average_dim_not_reduced": _round_number(_average(_clean_numeric_list(not_reduced["_days_in_mls"].tolist()))) if not not_reduced.empty and "_days_in_mls" in not_reduced.columns else None,
+    }
+
+
+def _net_result_bucket(amount_below_original: Optional[float]) -> str:
+    if amount_below_original is None:
+        return "Unknown"
+    if amount_below_original <= 0:
+        return "At / above original"
+    if amount_below_original < 10000:
+        return "$1-$9,999 below"
+    if amount_below_original < 25000:
+        return "$10K-$24,999 below"
+    if amount_below_original < 50000:
+        return "$25K-$49,999 below"
+    return "$50K+ below"
+
+
+def _build_net_result_buckets(closed_rows: pd.DataFrame) -> List[Dict[str, Any]]:
+    buckets_order = [
+        "At / above original",
+        "$1-$9,999 below",
+        "$10K-$24,999 below",
+        "$25K-$49,999 below",
+        "$50K+ below",
+        "Unknown",
+    ]
+    if closed_rows is None or closed_rows.empty:
+        return []
+
+    working = closed_rows.copy()
+    working["_net_below_original_amount"] = working["_original_list_price"] - working["_net_price"]
+    working["_net_result_bucket"] = working["_net_below_original_amount"].apply(_net_result_bucket)
+
+    output: List[Dict[str, Any]] = []
+    total = len(working)
+    for bucket in buckets_order:
+        subset = working[working["_net_result_bucket"] == bucket]
+        if subset.empty:
+            continue
+        output.append(
+            {
+                "net_result_vs_original": bucket,
+                "sales": int(len(subset)),
+                "share_percent": _pct(len(subset), total),
+                "average_dim": _round_number(_average(_clean_numeric_list(subset["_days_in_mls"].tolist()))) if "_days_in_mls" in subset.columns else None,
+            }
+        )
+    return output
+
+
+def _calculate_price_sensitivity_and_seller_net_behavior(
+    all_prepared_df: pd.DataFrame,
+    source_label: str = "1004MC / Competition Market File",
+) -> Dict[str, Any]:
+    """Analyze list-price reductions, concessions, seller-net movement, and market acceptance.
+
+    This is separate from Market Momentum. Momentum answers how fast the market is moving.
+    Price Sensitivity answers how much sellers are having to adjust before buyers accept a deal.
+    """
+    if all_prepared_df is None or all_prepared_df.empty or "_status_text" not in all_prepared_df.columns:
+        return {
+            "section_label": "Price Sensitivity & Seller Net Behavior",
+            "status": "not_available",
+            "source": source_label,
+            "seller_facing_note": "Price sensitivity could not be calculated because the market file was missing usable status data.",
+        }
+
+    df = all_prepared_df.copy()
+    status = df["_status_text"].fillna("").astype(str).str.lower().str.strip()
+    closed_mask = _is_closed_status_series(status)
+    pending_mask = _is_pending_status_series(status)
+    active_mask = _is_active_status_series(status)
+
+    closed_rows = df[closed_mask].copy()
+    if closed_rows.empty:
+        return {
+            "section_label": "Price Sensitivity & Seller Net Behavior",
+            "status": "not_available",
+            "source": source_label,
+            "seller_facing_note": "Price sensitivity could not be calculated because no Closed/Sold rows were available.",
+        }
+
+    close_dates = pd.to_datetime(closed_rows.get("_close_date"), errors="coerce") if "_close_date" in closed_rows.columns else pd.Series([], dtype="datetime64[ns]")
+    usable_close_dates = close_dates.dropna()
+
+    latest_close_date = usable_close_dates.max() if not usable_close_dates.empty else None
+    if latest_close_date is not None:
+        latest_90_start = latest_close_date - pd.Timedelta(days=89)
+        last_90_mask = close_dates.between(latest_90_start, latest_close_date, inclusive="both")
+        closed_last_90 = closed_rows[last_90_mask].copy()
+    else:
+        latest_90_start = None
+        closed_last_90 = closed_rows.copy()
+
+    active_metrics = _calculate_price_reduction_metrics(df[active_mask].copy())
+    pending_metrics = _calculate_price_reduction_metrics(df[pending_mask].copy())
+    closed_90_metrics = _calculate_price_reduction_metrics(closed_last_90)
+
+    # Closed sale price/net behavior in the most recent 90 days.
+    reviewed_count = int(len(closed_last_90))
+    closed_below_original_mask = closed_last_90["_close_price"] < closed_last_90["_original_list_price"] if "_close_price" in closed_last_90.columns and "_original_list_price" in closed_last_90.columns else pd.Series([], dtype=bool)
+    net_below_original_mask = closed_last_90["_net_price"] < closed_last_90["_original_list_price"] if "_net_price" in closed_last_90.columns and "_original_list_price" in closed_last_90.columns else pd.Series([], dtype=bool)
+    concessions_mask = closed_last_90["_concessions"] > 0 if "_concessions" in closed_last_90.columns else pd.Series([], dtype=bool)
+
+    concession_amounts = _clean_numeric_list(closed_last_90.loc[concessions_mask, "_concessions"].tolist()) if reviewed_count and "_concessions" in closed_last_90.columns else []
+
+    reduced_dim = closed_90_metrics.get("average_dim_reduced")
+    non_reduced_dim = closed_90_metrics.get("average_dim_not_reduced")
+    dim_gap = (reduced_dim - non_reduced_dim) if reduced_dim is not None and non_reduced_dim is not None else None
+
+    reduction_rate = closed_90_metrics.get("price_reduction_rate_percent")
+    net_below_rate = _pct(int(net_below_original_mask.sum()) if len(net_below_original_mask) else 0, reviewed_count) if reviewed_count else None
+    concession_rate = _pct(int(concessions_mask.sum()) if len(concessions_mask) else 0, reviewed_count) if reviewed_count else None
+
+    sensitivity_level = _format_price_sensitivity_level(reduction_rate, net_below_rate, concession_rate, dim_gap)
+
+    return compact_dict_local(
+        {
+            "section_label": "Price Sensitivity & Seller Net Behavior",
+            "status": "calculated",
+            "source": source_label,
+            "purpose": (
+                "Separate from Market Momentum. Momentum measures speed/activity. Price Sensitivity measures how often sellers had to reposition, concede, or net below original list before buyers accepted the property."
+            ),
+            "closed_sales_window": "Most recent 90 days by Close Date",
+            "closed_sales_reviewed": reviewed_count,
+            "latest_90_start_date": latest_90_start.date().isoformat() if latest_90_start is not None else None,
+            "latest_90_end_date": latest_close_date.date().isoformat() if latest_close_date is not None else None,
+            "active_price_adjustment_behavior": active_metrics,
+            "pending_price_adjustment_behavior": pending_metrics,
+            "closed_last_90_price_adjustment_behavior": closed_90_metrics,
+            "closed_below_original_count": int(closed_below_original_mask.sum()) if len(closed_below_original_mask) else None,
+            "closed_below_original_rate_percent": _pct(int(closed_below_original_mask.sum()) if len(closed_below_original_mask) else 0, reviewed_count) if reviewed_count else None,
+            "net_below_original_count": int(net_below_original_mask.sum()) if len(net_below_original_mask) else None,
+            "net_below_original_rate_percent": net_below_rate,
+            "seller_concession_count": int(concessions_mask.sum()) if len(concessions_mask) else None,
+            "seller_concession_rate_percent": concession_rate,
+            "average_concession_when_present": _round_currency_or_none(_average(concession_amounts)) if concession_amounts else None,
+            "average_dim_gap_reduced_vs_not_reduced": _round_number(dim_gap) if dim_gap is not None else None,
+            "seller_net_result_buckets": _build_net_result_buckets(closed_last_90),
+            "price_sensitivity_level": sensitivity_level,
+            "repositioning_consideration": (
+                "This is not an automatic price reduction. It is a market-acceptance review. If early buyer activity is weak, use the reduction rate, concessions, net-below-original behavior, active competition, and condition/terms feedback to decide whether a tactical repositioning is warranted."
+            ),
+            "seller_psychology_note": (
+                "Sellers often worry that lowering price signals weakness. A late reduction after long market time can create that perception. An early, data-supported repositioning can be framed as a strategy to return the home to the strongest buyer-search lane before it becomes stale."
+            ),
+            "summary_for_momentum": (
+                f"Closed last 90 reviewed: {reviewed_count}; MLS reduction rate: {reduction_rate}%; net below original: {net_below_rate}%; seller concessions: {concession_rate}%; signal: {sensitivity_level}."
+                if reviewed_count else None
+            ),
+        }
+    )
+
+
+def compact_dict_local(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Local compact helper for valuation-engine calculation dictionaries."""
+    output: Dict[str, Any] = {}
+    for key, value in data.items():
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        output[key] = value
+    return output
+
 def _calculate_limited_market_momentum(
     all_prepared_df: pd.DataFrame,
     column_map: Dict[str, Optional[str]],
@@ -1288,44 +1781,74 @@ def _calculate_limited_market_momentum(
         }
 
     df = all_prepared_df.copy()
-    status = df["_status_text"].fillna("").astype(str)
+    status = df["_status_text"].fillna("").astype(str).str.lower().str.strip()
 
-    active_mask = status.str.contains("active")
-    pending_mask = status.str.contains("pending") | status.str.contains("under contract")
     closed_mask = (
-        status.str.contains("closed")
-        | status.str.contains("sold")
-        | status.str.contains("settled")
+        status.str.contains("closed", na=False)
+        | status.str.contains("sold", na=False)
+        | status.str.contains("settled", na=False)
+    )
+    pending_mask = (
+        (
+            status.str.contains("pending", na=False)
+            | status.str.contains("under contract", na=False)
+        )
+        & ~closed_mask
+    )
+    coming_soon_mask = status.str.contains("coming soon", na=False) & ~pending_mask & ~closed_mask
+    active_mask = (
+        status.str.contains("active", na=False)
+        & ~pending_mask
+        & ~closed_mask
+        & ~coming_soon_mask
     )
 
     active_count = int(active_mask.sum())
+    coming_soon_count = int(coming_soon_mask.sum())
     pending_count = int(pending_mask.sum())
     closed_count = int(closed_mask.sum())
 
-    recent_monthly_successes = (pending_count + closed_count) / 3 if (pending_count + closed_count) else 0
-
-    months_of_seller_competition = (
-        active_count / recent_monthly_successes
-        if active_count and recent_monthly_successes
-        else None
-    )
-
-    estimated_30_day_success_rate = (
-        recent_monthly_successes / active_count
-        if active_count and recent_monthly_successes
-        else None
-    )
-
     solds = df[closed_mask].copy()
+
+    closed_sales_pace = _calculate_closed_sales_pace_from_dates(solds)
+
+    average_monthly_closed_sales = closed_sales_pace.get("average_monthly_closed_sales")
+    closed_sales_months_covered = closed_sales_pace.get("closed_sales_months_covered")
+
+    pending_inclusive_monthly_demand = (
+        (average_monthly_closed_sales or 0) + pending_count
+        if (average_monthly_closed_sales or pending_count)
+        else None
+    )
+
+    current_demand_pressure_moi = (
+        active_count / pending_inclusive_monthly_demand
+        if active_count and pending_inclusive_monthly_demand
+        else None
+    )
+
+    primary_months_of_inventory = (
+        active_count / average_monthly_closed_sales
+        if active_count and average_monthly_closed_sales
+        else None
+    )
+
+    # Backward-compatible aliases:
+    # - projected_moi_closed_only is the primary seller-facing MOI.
+    # - projected_moi_absorption_weighted is retained only as a secondary
+    #   pending-inclusive demand-pressure indicator because older code may read it.
+    projected_moi_closed_only = primary_months_of_inventory
+    projected_moi_absorption_weighted = current_demand_pressure_moi
+    absorption_weighted_monthly_demand = pending_inclusive_monthly_demand
 
     avg_original_list = (
         _average(_clean_numeric_list(solds["_original_list_price"].tolist()))
-        if not solds.empty
+        if not solds.empty and "_original_list_price" in solds.columns
         else None
     )
     avg_sale = (
         _average(_clean_numeric_list(solds["_close_price"].tolist()))
-        if not solds.empty
+        if not solds.empty and "_close_price" in solds.columns
         else None
     )
 
@@ -1336,7 +1859,7 @@ def _calculate_limited_market_momentum(
     )
 
     notes.append(
-        "Market Momentum & Buyer Competition is limited when only the comparable evidence file is uploaded."
+        "Market Momentum uses Closed sales from the most recent 90 days and divides by 3 for current absorption, while retaining the full-year monthly rhythm for trend context."
     )
 
     return {
@@ -1346,26 +1869,88 @@ def _calculate_limited_market_momentum(
         "important_limitation": (
             "Comparable sales and competitive market data are related but not identical. "
             "A property may be active competition without being a valid comparable sale. "
-            "A separate 2-mile active/pending competitive market file is recommended for full Shopping Cart Theory analysis."
+            "A separate active/pending competitive market file is recommended for a fuller competition review."
         ),
-        "time_frame_assumption": "90 days when uploaded file reflects a 90-day search; otherwise based on supplied rows.",
+        "seller_meaning_rule": (
+            "Explain competition through Pricing, Condition, Terms, and Timing. Active listings show the choices buyers have today; "
+            "closed comparable sales support value, but active competition affects showing traffic, negotiation leverage, and how quickly the seller may need to respond."
+        ),
+        "closed_sales_pace_rule": (
+            "Average monthly closed sales are calculated from Closed sales in the most recent 90 days divided by 3. "
+            "The annual Closed pull remains available for month-by-month rhythm/trend review, but the primary seller-facing Months of Inventory uses the current 90-day Closed sales pace."
+        ),
+        "moi_reporting_rule": (
+            "Primary seller-facing MOI = Active listings ÷ latest 90-day average monthly Closed sales. "
+            "The pending-inclusive formula is a secondary current-demand pressure indicator only; do not present it as the main MOI."
+        ),
+        "time_frame_assumption": "Closed sales pace for absorption is based on the latest 90 days of Closed records when Close Date is supplied; otherwise the report must state the limitation.",
         "active_count": active_count,
+        "coming_soon_count": coming_soon_count,
         "pending_count": pending_count,
         "closed_count": closed_count,
-        "recent_monthly_successes": round(recent_monthly_successes, 2),
-        "months_of_seller_competition": (
-            round(months_of_seller_competition, 2)
-            if months_of_seller_competition is not None
+        "closed_count_total_0_365_pull": closed_sales_pace.get("closed_count_total_0_365_pull") or closed_count,
+        "closed_count_last_90_days": closed_sales_pace.get("closed_count_last_90_days"),
+        "recent_90_day_start_date": closed_sales_pace.get("recent_90_day_start_date"),
+        "recent_90_day_end_date": closed_sales_pace.get("recent_90_day_end_date"),
+        "recent_90_day_months_used": closed_sales_pace.get("recent_90_day_months_used"),
+        "monthly_closed_sales_rhythm": closed_sales_pace.get("monthly_closed_sales_rhythm"),
+        "closed_sales_min_close_date": closed_sales_pace.get("min_close_date"),
+        "closed_sales_max_close_date": closed_sales_pace.get("max_close_date"),
+        "closed_sales_date_span_days": closed_sales_pace.get("date_span_days"),
+        "closed_sales_months_covered": closed_sales_months_covered,
+        "closed_sales_months_covered_rounded": (
+            round(closed_sales_months_covered, 2)
+            if closed_sales_months_covered is not None
             else None
         ),
-        "estimated_30_day_success_rate": (
-            round(estimated_30_day_success_rate, 4)
-            if estimated_30_day_success_rate is not None
+        "average_monthly_closed_sales": (
+            round(average_monthly_closed_sales, 2)
+            if average_monthly_closed_sales is not None
             else None
         ),
-        "estimated_30_day_success_rate_percent": (
-            round(estimated_30_day_success_rate * 100, 2)
-            if estimated_30_day_success_rate is not None
+        "closed_sales_pace_source": closed_sales_pace.get("source"),
+        "primary_months_of_inventory": (
+            round(primary_months_of_inventory, 2)
+            if primary_months_of_inventory is not None
+            else None
+        ),
+        "primary_moi_formula": "Active listings ÷ latest 90-day average monthly Closed sales",
+        "pending_inclusive_monthly_demand": (
+            round(pending_inclusive_monthly_demand, 2)
+            if pending_inclusive_monthly_demand is not None
+            else None
+        ),
+        "current_demand_pressure_moi": (
+            round(current_demand_pressure_moi, 2)
+            if current_demand_pressure_moi is not None
+            else None
+        ),
+        "current_demand_pressure_formula": "Active listings ÷ (Pending listings + latest 90-day average monthly Closed sales)",
+        "absorption_weighted_monthly_demand": (
+            round(absorption_weighted_monthly_demand, 2)
+            if absorption_weighted_monthly_demand is not None
+            else None
+        ),
+        "projected_moi_absorption_weighted": (
+            round(projected_moi_absorption_weighted, 2)
+            if projected_moi_absorption_weighted is not None
+            else None
+        ),
+        "projected_moi_closed_only": (
+            round(projected_moi_closed_only, 2)
+            if projected_moi_closed_only is not None
+            else None
+        ),
+        "projected_moi_range": (
+            {
+                "primary_seller_facing_moi": round(primary_months_of_inventory, 2),
+                "secondary_pending_pressure_moi": round(current_demand_pressure_moi, 2),
+                "seller_facing_note": (
+                    "Use the Closed-only MOI as the primary seller-facing supply/absorption number because it is more conservative and easier to explain. "
+                    "The pending-inclusive number is secondary; it may show near-term demand pressure, but it should not replace the main MOI in seller guidance."
+                ),
+            }
+            if current_demand_pressure_moi is not None and primary_months_of_inventory is not None
             else None
         ),
         "average_original_list_price_of_solds": _round_money(avg_original_list),
@@ -1374,21 +1959,108 @@ def _calculate_limited_market_momentum(
         "list_to_sale_ratio_percent": round(list_to_sale_ratio * 100, 2) if list_to_sale_ratio else None,
         "average_dim_active": (
             _round_number(_average(_clean_numeric_list(df[active_mask]["_days_in_mls"].tolist())))
-            if active_count
+            if active_count and "_days_in_mls" in df.columns
             else None
         ),
         "average_dim_pending": (
             _round_number(_average(_clean_numeric_list(df[pending_mask]["_days_in_mls"].tolist())))
-            if pending_count
+            if pending_count and "_days_in_mls" in df.columns
             else None
         ),
         "average_dim_closed": (
             _round_number(_average(_clean_numeric_list(df[closed_mask]["_days_in_mls"].tolist())))
-            if closed_count
+            if closed_count and "_days_in_mls" in df.columns
             else None
         ),
         "requires_gpt_interpretation": True,
     }
+
+
+def _calculate_closed_sales_pace_from_dates(solds: pd.DataFrame) -> Dict[str, Any]:
+    """Calculate current closed-sales pace from the most recent 90 days.
+
+    The broader 1004MC / Competition file may contain up to 365 days of Closed
+    records. That annual pull remains useful for month-by-month rhythm/trend
+    review, but absorption/MOI should use the most current rhythm:
+    Closed sales in the latest 90-day window divided by 3.
+    """
+    if solds is None or solds.empty:
+        return {
+            "closed_count": 0,
+            "closed_count_last_90_days": 0,
+            "average_monthly_closed_sales": None,
+            "recent_90_day_months_used": 3,
+            "source": "no_closed_sales",
+        }
+
+    closed_count_total = int(len(solds))
+
+    if "_close_date" not in solds.columns:
+        return {
+            "closed_count": closed_count_total,
+            "closed_count_last_90_days": None,
+            "average_monthly_closed_sales": None,
+            "recent_90_day_months_used": 3,
+            "source": "missing_close_date_column",
+            "note": "Close Date was not available, so last-90-day closed-sales pace could not be calculated safely.",
+        }
+
+    close_dates = pd.to_datetime(solds["_close_date"], errors="coerce")
+    usable_close_dates = close_dates.dropna()
+
+    if usable_close_dates.empty:
+        return {
+            "closed_count": closed_count_total,
+            "closed_count_last_90_days": None,
+            "average_monthly_closed_sales": None,
+            "recent_90_day_months_used": 3,
+            "source": "no_usable_close_dates",
+            "note": "Closed rows were present, but usable Close Date values were not available.",
+        }
+
+    min_close_date = usable_close_dates.min()
+    max_close_date = usable_close_dates.max()
+
+    latest_90_start = max_close_date - pd.Timedelta(days=89)
+    last_90_mask = close_dates.between(latest_90_start, max_close_date, inclusive="both")
+    closed_last_90 = solds[last_90_mask].copy()
+    closed_count_last_90 = int(len(closed_last_90))
+
+    average_monthly_closed_sales = closed_count_last_90 / 3.0
+
+    monthly_rhythm_series = (
+        usable_close_dates.dt.to_period("M")
+        .value_counts()
+        .sort_index()
+    )
+    monthly_rhythm = [
+        {
+            "month": str(month),
+            "closed_count": int(count),
+        }
+        for month, count in monthly_rhythm_series.items()
+    ]
+
+    return {
+        "closed_count": closed_count_total,
+        "closed_count_total_0_365_pull": closed_count_total,
+        "closed_count_last_90_days": closed_count_last_90,
+        "recent_90_day_start_date": latest_90_start.date().isoformat(),
+        "recent_90_day_end_date": max_close_date.date().isoformat(),
+        "recent_90_day_months_used": 3,
+        "min_close_date": min_close_date.date().isoformat(),
+        "max_close_date": max_close_date.date().isoformat(),
+        "date_span_days": max(int((max_close_date - min_close_date).days), 0),
+        "closed_sales_months_covered": 3.0,
+        "average_monthly_closed_sales": average_monthly_closed_sales,
+        "monthly_closed_sales_rhythm": monthly_rhythm,
+        "source": "latest_90_days_divided_by_3",
+        "seller_facing_note": (
+            "The file may contain up to one year of Closed sales, but absorption uses the most recent 90 days. "
+            "Closed sales in that 90-day window are divided by 3 to reflect the current market rhythm."
+        ),
+    }
+
 
 
 def _summarize_1004mc(summary: Dict[str, Any]) -> Dict[str, Any]:
@@ -1555,6 +2227,76 @@ def _determine_effective_date(df: pd.DataFrame) -> Optional[pd.Timestamp]:
         return None
 
     return dates.max()
+
+
+def _tokenize_address(value: Any) -> List[str]:
+    text = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    return [token for token in text.split() if token]
+
+
+def _address_tokens_match(subject_address: Any, row_address: Any) -> bool:
+    subject_tokens = _tokenize_address(subject_address)
+    row_tokens = _tokenize_address(row_address)
+
+    if not subject_tokens or not row_tokens:
+        return False
+
+    # Require street number when available, plus at least one non-directional street token.
+    if subject_tokens[0].isdigit() and subject_tokens[0] not in row_tokens:
+        return False
+
+    ignored = {
+        "e", "w", "n", "s", "east", "west", "north", "south",
+        "pl", "place", "st", "street", "ave", "avenue", "dr", "drive",
+        "ct", "court", "ln", "lane", "way", "rd", "road",
+    }
+    meaningful_subject = [token for token in subject_tokens[1:] if token not in ignored]
+    hits = sum(1 for token in meaningful_subject if token in row_tokens)
+
+    return hits >= 1
+
+
+def _detect_subject_market_snapshot(subject: Dict[str, Any], all_prepared_df: pd.DataFrame) -> Dict[str, Any]:
+    subject_address = subject.get("subject_address") or subject.get("address")
+    snapshot = {
+        "matched_in_market_file": False,
+        "status": subject.get("status") or subject.get("mls_status"),
+        "current_price": None,
+        "original_price": None,
+        "previous_price": None,
+        "days_in_mls": None,
+        "matched_address": None,
+        "price_reduction_detected": False,
+    }
+
+    if all_prepared_df is None or all_prepared_df.empty or not subject_address:
+        return snapshot
+
+    for _idx, row in all_prepared_df.iterrows():
+        row_address = row.get("_address")
+        if not _address_tokens_match(subject_address, row_address):
+            continue
+
+        current_price = _round_money(row.get("_list_price"))
+        original_price = _round_money(row.get("_original_list_price"))
+        previous_price = _round_money(row.get("_previous_list_price"))
+        status = str(row.get("_status_text") or "").strip().lower() or None
+
+        snapshot.update(
+            {
+                "matched_in_market_file": True,
+                "status": status,
+                "current_price": current_price,
+                "original_price": original_price,
+                "previous_price": previous_price,
+                "days_in_mls": _round_number(row.get("_days_in_mls")),
+                "matched_address": row_address,
+                "price_reduction_detected": bool(original_price and current_price and current_price < original_price),
+            }
+        )
+        return snapshot
+
+    return snapshot
 
 
 # ---------------------------------------------------------------------

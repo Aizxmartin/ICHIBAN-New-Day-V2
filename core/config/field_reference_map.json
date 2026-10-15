@@ -341,5 +341,48 @@
       "identity"
     ],
     "human_definition": "Property ZIP/postal code."
+  },
+  "living_area_finished": {
+    "source_field": "Living Area",
+    "accepted_source_labels": [
+      "Living Area",
+      "Living Area (SqFt Finished)",
+      "Total Finished Area",
+      "SqFt Finished"
+    ],
+    "category": "Size",
+    "cpu_usage": "Descriptive and reconciliation field only; not a substitute for Above Grade Finished Area.",
+    "required_for": [
+      "validation",
+      "reporting"
+    ],
+    "human_definition": "Total finished area as reported, which may include finished below-grade area.",
+    "prohibited_mapping": "above_grade_sqft"
+  },
+  "net_close_psf_above_grade": {
+    "calculation": "net_close_price / above_grade_sqft",
+    "category": "Descriptive Ratio",
+    "cpu_usage": "Reasonableness check and market description only; not a primary valuation method.",
+    "required_for": [
+      "optional_reporting"
+    ],
+    "human_definition": "Net close price divided by Above Grade Finished Area.",
+    "prohibited_aliases": [
+      "ppsf",
+      "psf"
+    ]
+  },
+  "_schema_controls": {
+    "schema_version": "1.1.0",
+    "effective_date": "2026-07-11",
+    "single_source_of_truth": true,
+    "rules": [
+      "Preserve exact source field names before canonical mapping.",
+      "Above Grade Finished Area is the only MLS field allowed to map directly to above_grade_sqft.",
+      "Living Area, Total Finished Area, and Bldg Sq Ft - Finished must never map to above_grade_sqft.",
+      "Building Area Total must not accept Total Finished Area as an alias.",
+      "No generic PSF field is permitted; numerator and denominator must be explicit.",
+      "Standard Status is prohibited for mls_status normalization."
+    ]
   }
 }

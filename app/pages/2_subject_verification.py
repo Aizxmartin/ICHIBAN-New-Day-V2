@@ -8,9 +8,12 @@ from typing import Any, Dict, List
 import pandas as pd
 import streamlit as st
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from app.ui_theme import apply_ichiban_theme, ichiban_hero
 
 from core.address_subject_profile import blank_subject_profile
 from core.pdf_diagnostics import probe_document_source
@@ -34,6 +37,9 @@ st.set_page_config(
     page_icon="🏡",
     layout="wide",
 )
+
+apply_ichiban_theme()
+
 
 st.title("Module 2 — Subject Verification")
 st.subheader("Diagnose, extract, verify, and lock the subject property before valuation")
@@ -182,7 +188,10 @@ def _facts_to_subject_profile(
     verification_notes: List[str] = list(facts.get("data_verification_notes") or [])
 
     def set_field(profile_key: str, value: Any, source: str = "Realist PDF") -> None:
-        if value not in (None, "", 0, 0.0):
+        # Preserve valid zero values. A true 0 can be meaningful for fields such
+        # as unfinished basement sqft, concessions, or counts. Only blank/None
+        # means missing.
+        if value not in (None, ""):
             profile[profile_key] = value
             field_sources[profile_key] = source
 
@@ -441,21 +450,28 @@ def _show_profile_table(profile: Dict[str, Any]) -> None:
 # Load current profile state
 # ---------------------------------------------------------------------
 
-verified_subject = load_verified_subject()
+# v20.1 safety: session/newly parsed subject controls. A saved verified subject is
+# only a fallback when no current in-session subject exists. This prevents Property A
+# from silently replacing Property B on Streamlit rerun.
+profile = st.session_state.get("subject_profile")
+verified_subject = None
 
-if verified_subject:
-    profile = verified_subject
-    st.session_state["subject_profile"] = profile
-    st.session_state["subject_ready"] = True
-else:
-    profile = st.session_state.get("subject_profile")
-
-    if not profile:
-        address = st.session_state.get("subject_address", "")
-        profile = blank_subject_profile(address)
-
+if profile:
     profile = validate_subject_profile(profile)
     st.session_state["subject_profile"] = profile
+    if profile.get("subject_verified") or profile.get("subject_profile_ready"):
+        st.session_state["subject_ready"] = True
+else:
+    verified_subject = load_verified_subject()
+    if verified_subject:
+        profile = validate_subject_profile(verified_subject)
+        st.session_state["subject_profile"] = profile
+        st.session_state["subject_ready"] = True
+    else:
+        address = st.session_state.get("subject_address", "")
+        profile = blank_subject_profile(address)
+        profile = validate_subject_profile(profile)
+        st.session_state["subject_profile"] = profile
 
 
 # ---------------------------------------------------------------------
