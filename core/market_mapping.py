@@ -25,7 +25,7 @@ FIELD_REFERENCE_MAP: Dict[str, Dict[str, Any]] = _load_field_reference_map()
 # differs from the machine-readable field map.
 MARKET_FIELD_ALIASES: Dict[str, List[str]] = {
     "listing_id": ["Listing ID", "MLS Number", "MLS #", "MLS Num"],
-    "mls_status": ["Mls Status", "MLS Status", "Status", "Standard Status"],
+    "mls_status": ["Mls Status", "MLS Status", "Status"],
     "street_number": ["Street Number Numeric", "Street Number"],
     "street_name": ["Street Name"],
     "street_suffix": ["Street Suffix"],
@@ -39,7 +39,8 @@ MARKET_FIELD_ALIASES: Dict[str, List[str]] = {
     "finished_basement_sqft": ["Below Grade Finished Area", "Basement Finished Area", "Finished Basement SqFt", "Bldg Sq Ft - Finished Basement"],
     "below_grade_finished_sqft": ["Below Grade Finished Area", "Basement Finished Area", "Finished Basement SqFt"],
     "below_grade_unfinished_sqft": ["Below Grade Unfinished Area", "Basement Unfinished Area", "Unfinished Basement SqFt"],
-    "building_area_total": ["Building Area Total", "Total SqFt", "Total Finished Area"],
+    "building_area_total": ["Building Area Total", "Total SqFt"],
+    "living_area_finished": ["Living Area", "Living Area (SqFt Finished)", "Total Finished Area", "SqFt Finished"],
     "beds": ["Bedrooms Total", "Beds Total", "Bedrooms", "Beds"],
     "baths": ["Bathrooms Total Integer", "Bathrooms Total Decimal", "Baths Total", "Bathrooms", "Baths"],
     "year_built": ["Year Built"],
@@ -76,6 +77,7 @@ NUMERIC_FIELDS = {
     "below_grade_finished_sqft",
     "below_grade_unfinished_sqft",
     "building_area_total",
+    "living_area_finished",
     "beds",
     "baths",
     "year_built",
@@ -278,7 +280,7 @@ def normalize_market_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, Dict[str
     if "above_grade_sqft" in normalized.columns and "net_close_price" in normalized.columns:
         ag = pd.to_numeric(normalized["above_grade_sqft"], errors="coerce")
         price = pd.to_numeric(normalized["net_close_price"], errors="coerce")
-        normalized["ppsf"] = price.where(ag > 0) / ag.where(ag > 0)
+        normalized["net_close_psf_above_grade"] = price.where(ag > 0) / ag.where(ag > 0)
 
     missing = [field for field in get_required_core_fields() if field not in normalized.columns]
 

@@ -15,7 +15,7 @@ class CompEngineResult:
     selected_comp_preview: pd.DataFrame
     recommended_low: Optional[float]
     recommended_high: Optional[float]
-    average_ppsf: Optional[float]
+    average_net_close_psf_above_grade: Optional[float]
     median_effective_price: Optional[float]
     debug: Dict[str, Any]
 
@@ -48,7 +48,6 @@ def _get_subject_ag_sqft(subject_profile: Dict[str, Any]) -> Optional[float]:
         "above_grade_sqft",
         "above_grade_finished_area",
         "ag_sqft",
-        "finished_sqft",
     ]
 
     for key in candidates:
@@ -101,7 +100,7 @@ def run_comp_engine(market_df: pd.DataFrame, subject_profile: Dict[str, Any]) ->
             selected_comp_preview=empty,
             recommended_low=None,
             recommended_high=None,
-            average_ppsf=None,
+            average_net_close_psf_above_grade=None,
             median_effective_price=None,
             debug=debug,
         )
@@ -188,27 +187,27 @@ def run_comp_engine(market_df: pd.DataFrame, subject_profile: Dict[str, Any]) ->
         prices = pd.to_numeric(selected["effective_sale_price"], errors="coerce").dropna()
 
         if ag_col is not None:
-            selected["_ag_for_ppsf"] = _to_number(selected[ag_col])
-            selected["effective_ppsf"] = (
+            selected["_above_grade_for_psf"] = _to_number(selected[ag_col])
+            selected["effective_net_close_psf_above_grade"] = (
                 selected["effective_sale_price"]
-                / selected["_ag_for_ppsf"].replace(0, pd.NA)
+                / selected["_above_grade_for_psf"].replace(0, pd.NA)
             )
         else:
-            selected["effective_ppsf"] = pd.NA
+            selected["effective_net_close_psf_above_grade"] = pd.NA
 
         median_effective_price = float(prices.median()) if not prices.empty else None
 
         recommended_low = float(prices.min()) if not prices.empty else None
         recommended_high = float(prices.max()) if not prices.empty else None
 
-        average_ppsf = float(
-            pd.to_numeric(selected["effective_ppsf"], errors="coerce").mean()
+        average_net_close_psf_above_grade = float(
+            pd.to_numeric(selected["effective_net_close_psf_above_grade"], errors="coerce").mean()
         )
 
     else:
         recommended_low = None
         recommended_high = None
-        average_ppsf = None
+        average_net_close_psf_above_grade = None
         median_effective_price = None
 
     preview_cols = [
@@ -224,7 +223,7 @@ def run_comp_engine(market_df: pd.DataFrame, subject_profile: Dict[str, Any]) ->
             "net_close_price",
             "close_price",
             "effective_sale_price",
-            "effective_ppsf",
+            "effective_net_close_psf_above_grade",
         ]
         if c in selected.columns
     ]
@@ -239,7 +238,7 @@ def run_comp_engine(market_df: pd.DataFrame, subject_profile: Dict[str, Any]) ->
         selected_comp_preview=selected_comp_preview,
         recommended_low=recommended_low,
         recommended_high=recommended_high,
-        average_ppsf=average_ppsf,
+        average_net_close_psf_above_grade=average_net_close_psf_above_grade,
         median_effective_price=median_effective_price,
         debug=debug,
     )

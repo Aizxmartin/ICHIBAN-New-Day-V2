@@ -2,13 +2,19 @@ import sys
 from pathlib import Path
 import streamlit as st
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from app.ui_theme import apply_ichiban_theme, ichiban_hero
+
 from core.address_subject_profile import blank_subject_profile
 
 st.set_page_config(page_title="ICHIBAN - Address Intake", page_icon="🏡", layout="wide")
+
+apply_ichiban_theme()
+
 
 st.title("Module 1 — Address Intake")
 st.subheader("Start with the property address")

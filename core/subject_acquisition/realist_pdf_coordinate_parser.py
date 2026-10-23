@@ -224,8 +224,12 @@ def _clean_text(text: str) -> str:
 
 
 def _parse_header(text: str, facts: RealistSubjectFacts) -> None:
+    # REcolorado/CoreLogic exports can insert a listing-status phrase between
+    # county and APN, for example:
+    #   10006 Boca Cir, Parker, CO 80134-3588, Douglas County Active Listing APN: R0414719
+    # Older Realist exports had county immediately followed by APN. Support both.
     m = re.search(
-        r"^(?P<address>.+?),\s*(?P<county>[A-Za-z &]+ County)\s+APN:\s*(?P<apn>[A-Za-z0-9\-]+)",
+        r"^(?P<address>.+?),\s*(?P<county>[A-Za-z &]+ County)(?:\s+(?:Active|Pending|Closed|Coming Soon|Withdrawn|Expired)\s+Listing)?\s+APN:\s*(?P<apn>[A-Za-z0-9\-]+)",
         text,
         flags=re.IGNORECASE,
     )
@@ -235,11 +239,20 @@ def _parse_header(text: str, facts: RealistSubjectFacts) -> None:
         facts.county = _clean_value(m.group("county"))
         facts.apn = _clean_value(m.group("apn"))
 
+    # Some downloaded Property Details exports use PIN in Tax Information even
+    # when the header APN pattern fails. Keep APN populated from PIN as fallback.
+    if not facts.apn:
+        pin = _extract_text_between(text, "PIN", ["Tax District", "Alternate PIN", "Schedule Number"])
+        if pin:
+            facts.apn = pin.strip().split()[0]
+
     facts.clip = _extract_text_between(
         text,
         "CLIP:",
-        ["Beds", "Full Baths", "Sale Price"],
+        ["MLS", "Beds", "Full Baths", "Sale Price"],
     )
+    if facts.clip:
+        facts.clip = facts.clip.split()[0]
 
 
 def _parse_summary_row(text: str, facts: RealistSubjectFacts) -> None:
@@ -250,6 +263,13 @@ def _parse_summary_row(text: str, facts: RealistSubjectFacts) -> None:
     facts.sale_price = _extract_money_after_label(text, "Sale Price")
     facts.sale_date = _extract_date_after_label(text, "Sale Date")
     facts.building_sqft = _extract_int_after_label(text, "Bldg Sq Ft")
+    # Downloaded active-listing Property Details exports often use "MLS Sq Ft"
+    # instead of the older top-summary "Bldg Sq Ft" label. In that case the
+    # value is the MLS finished square footage and is useful as the summary
+    # finished-size anchor.
+    if facts.building_sqft is None:
+        facts.building_sqft = _extract_int_after_label(text, "MLS Sq Ft")
+
     facts.lot_sqft = _extract_int_after_label(text, "Lot Sq Ft")
     facts.year_built = _extract_year_after_label(text, "Yr Built")
 
@@ -476,6 +496,11 @@ def _parse_characteristics(text: str, facts: RealistSubjectFacts) -> None:
         section,
         "Bldg Sq Ft - Finished",
     )
+    # Prefer the explicit MLS finished sqft when Realist displays both Tax and MLS
+    # values in the same row: "Bldg Sq Ft - Finished Tax: 2,653 MLS: 3,034".
+    mls_finished = _extract_mls_int_after_label(section, "Bldg Sq Ft - Finished")
+    if mls_finished is not None:
+        facts.finished_building_sqft = mls_finished
 
     facts.heat_type = _extract_text_between(
         section,
@@ -502,6 +527,25 @@ def _parse_characteristics(text: str, facts: RealistSubjectFacts) -> None:
         facts.beds = _extract_float_after_label(section, "Bedrooms")
 
     facts.total_baths = _extract_float_after_label(section, "Baths - Total")
+    # Prefer MLS total baths over tax total baths when both are printed.
+    mls_total_baths = _extract_mls_float_after_label(section, "Baths - Total")
+    if mls_total_baths is not None:
+        facts.total_baths = mls_total_baths
+
+    # If MLS finished sqft is available and above-ground sqft is available, derive
+    # MLS finished basement. This avoids using older tax finished-basement sqft
+    # when the downloaded listing report clearly reports a higher MLS finished
+    # total.
+    if (
+        facts.finished_building_sqft is not None
+        and facts.building_sqft_above_ground is not None
+        and facts.finished_building_sqft > facts.building_sqft_above_ground
+    ):
+        derived_finished_basement = facts.finished_building_sqft - facts.building_sqft_above_ground
+        if derived_finished_basement >= 0:
+            facts.finished_basement_sqft = derived_finished_basement
+            if facts.basement_sqft is not None and facts.basement_sqft >= derived_finished_basement:
+                facts.unfinished_basement_sqft = facts.basement_sqft - derived_finished_basement
 
 
 def _parse_sell_score(text: str, facts: RealistSubjectFacts) -> None:
@@ -651,6 +695,32 @@ def _extract_text_between(
     value = _clean_value(value)
 
     return value or None
+
+
+def _extract_mls_int_after_label(text: str, label: str) -> Optional[int]:
+    m = re.search(
+        re.escape(label) + r"[^.]{0,80}?MLS:\s*([0-9][0-9,]*)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if not m:
+        return None
+
+    return _to_int(m.group(1))
+
+
+def _extract_mls_float_after_label(text: str, label: str) -> Optional[float]:
+    m = re.search(
+        re.escape(label) + r"[^.]{0,80}?MLS:\s*([0-9]+(?:\.[0-9]+)?)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if not m:
+        return None
+
+    return float(m.group(1))
 
 
 def _extract_int_after_label(text: str, label: str) -> Optional[int]:
