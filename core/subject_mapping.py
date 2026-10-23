@@ -4,40 +4,82 @@ import re
 from typing import Any
 
 
+# Subject PDF / Realist label mapping.
+#
+# IMPORTANT:
+# Above-grade square footage must only come from labels that clearly mean
+# above-ground / above-grade area. Realist's broad "Bldg Sq Ft" and
+# "Bldg Sq Ft - Finished" fields can include finished basement area and
+# must NOT be mapped to above_grade_sqft.
 SUBJECT_TO_STANDARD = {
-    "Bldg Sq Ft - Finished": "above_grade_sqft",
+    # SAFE ABOVE-GRADE ONLY
     "Bldg Sq Ft - Above Ground": "above_grade_sqft",
     "Above Ground Sq Ft": "above_grade_sqft",
     "Above Grade Finished Area": "above_grade_sqft",
     "Above Grade Finished Sq Ft": "above_grade_sqft",
     "Above Grade Sq Ft": "above_grade_sqft",
     "Above Grade Area": "above_grade_sqft",
-    "Gross Living Area": "above_grade_sqft",
-    "Living Area": "above_grade_sqft",
-    "Main Level Sq Ft": "above_grade_sqft",
-    "Main Level Area": "above_grade_sqft",
-    "Main Level Living Area": "above_grade_sqft",
     "Finished Area Above Grade": "above_grade_sqft",
+
+    # REALIST TOTAL FINISHED / BROADER LIVING AREA — NOT ABOVE GRADE
+    "Bldg Sq Ft": "total_finished_sqft",
+    "Bldg Sq Ft - Finished": "total_finished_sqft",
+    "MLS Sq Ft": "total_finished_sqft",
+    "Total Finished Sq Ft": "total_finished_sqft",
+    "Total Finished Area": "total_finished_sqft",
+    "Living Area": "living_area",
+    "Gross Living Area": "living_area",
+
+    # TOTAL BUILDING AREA
+    "Bldg Sq Ft - Total": "building_area_total",
+    "Building Area Total": "building_area_total",
+    "Total Building Area": "building_area_total",
+    "Total Sq Ft": "building_area_total",
+
+    # BASEMENT
     "Bldg Sq Ft - Basement": "basement_sqft",
     "Basement Sq Ft": "basement_sqft",
     "Basement SF": "basement_sqft",
     "Basement Area": "basement_sqft",
+    "Below Grade Area": "basement_sqft",
+    "Below Grade Sq Ft": "basement_sqft",
+
     "Bldg Sq Ft - Finished Basement": "finished_basement_sqft",
     "Finished Basement Sq Ft": "finished_basement_sqft",
     "Finished Basement SF": "finished_basement_sqft",
     "Bsmt Finished Area": "finished_basement_sqft",
     "Finished Basement": "finished_basement_sqft",
+    "Below Grade Finished Area": "finished_basement_sqft",
+    "Below Grade Finished Sq Ft": "finished_basement_sqft",
+
+    "Bldg Sq Ft - Unfinished Basement": "unfinished_basement_sqft",
+    "Unfinished Basement Sq Ft": "unfinished_basement_sqft",
+    "Unfinished Basement SF": "unfinished_basement_sqft",
+    "Bsmt Unfinished Area": "unfinished_basement_sqft",
+    "Below Grade Unfinished Area": "unfinished_basement_sqft",
+    "Below Grade Unfinished Sq Ft": "unfinished_basement_sqft",
+
+    # PROPERTY TYPE
     "Land Use - County": "property_type",
     "Land Use": "property_type",
     "Property Type": "property_type",
     "Type": "property_type",
     "Residential Type": "property_type",
+
+    # PROPERTY SUBTYPE
     "Land Use - CoreLogic": "property_subtype",
     "Property Sub Type": "property_subtype",
     "Property Subtype": "property_subtype",
     "Sub Type": "property_subtype",
-    "Style": "property_subtype",
     "SFR": "property_subtype",
+
+    # STYLE / LEVELS
+    "Style": "style",
+    "Stories": "stories",
+    "Levels": "levels",
+    "Architectural Style": "style",
+
+    # OTHER SUBJECT FIELDS
     "Year Built": "year_built",
     "Actual Year Built": "year_built",
     "RealAVM": "real_avm",
@@ -69,64 +111,79 @@ FIELD_LABEL_ALIASES: dict[str, list[str]] = {}
 for raw_label, standard_key in SUBJECT_TO_STANDARD.items():
     FIELD_LABEL_ALIASES.setdefault(standard_key, []).append(raw_label)
 
-FIELD_LABEL_ALIASES.setdefault('real_avm_range', []).extend([
-    'RealAVM Range',
-    'Real AVM Range',
+FIELD_LABEL_ALIASES.setdefault("real_avm_range", []).extend([
+    "RealAVM Range",
+    "Real AVM Range",
 ])
 
 PROPERTY_TYPE_CANDIDATES = [
-    'Land Use - County',
-    'Land Use',
-    'Property Type',
-    'Type',
-    'Residential Type',
+    "Land Use - County",
+    "Land Use",
+    "Property Type",
+    "Type",
+    "Residential Type",
 ]
 
 PROPERTY_SUBTYPE_CANDIDATES = [
-    'Land Use - CoreLogic',
-    'Property Sub Type',
-    'Property Subtype',
-    'Sub Type',
-    'Style',
-    'SFR',
+    "Land Use - CoreLogic",
+    "Property Sub Type",
+    "Property Subtype",
+    "Sub Type",
+    "SFR",
+]
+
+STYLE_CANDIDATES = [
+    "Style",
+    "Architectural Style",
+]
+
+LEVELS_CANDIDATES = [
+    "Levels",
+    "Stories",
 ]
 
 PROPERTY_TYPE_ALIASES = {
-    'sfr': 'Single Family Residence',
-    'single family': 'Single Family Residence',
-    'single-family': 'Single Family Residence',
-    'single family residence': 'Single Family Residence',
-    'residential': 'Residential',
-    'condo': 'Condominium',
-    'condominium': 'Condominium',
-    'townhome': 'Townhouse',
-    'townhouse': 'Townhouse',
-    'attached': 'Attached',
-    'detached': 'Detached',
-    'duplex': 'Duplex',
-    'half duplex': 'Half Duplex',
-    'patio home': 'Patio Home',
-    'row house': 'Row House',
+    "sfr": "Single Family Residence",
+    "single family": "Single Family Residence",
+    "single-family": "Single Family Residence",
+    "single family residence": "Single Family Residence",
+    "residential": "Residential",
+    "condo": "Condominium",
+    "condominium": "Condominium",
+    "townhome": "Townhouse",
+    "townhouse": "Townhouse",
+    "attached": "Attached",
+    "detached": "Detached",
+    "duplex": "Duplex",
+    "half duplex": "Half Duplex",
+    "patio home": "Patio Home",
+    "row house": "Row House",
 }
 
 PROPERTY_SUBTYPE_ALIASES = {
-    'sfr': 'SFR',
-    'single family': 'SFR',
-    'single family residence': 'SFR',
-    'detached': 'SFR',
-    'ranch': 'Ranch',
-    'two story': 'Two Story',
-    'tri-level': 'Tri-Level',
-    'tri level': 'Tri-Level',
-    'bi-level': 'Bi-Level',
-    'bi level': 'Bi-Level',
-    'townhouse': 'Townhome',
-    'townhome': 'Townhome',
-    'condominium': 'Condo',
-    'condo': 'Condo',
+    "sfr": "SFR",
+    "single family": "SFR",
+    "single family residence": "SFR",
+    "detached": "SFR",
+    "townhouse": "Townhome",
+    "townhome": "Townhome",
+    "condominium": "Condo",
+    "condo": "Condo",
 }
 
-NUMBER_RE = re.compile(r'\$?\s*([\d,]+(?:\.\d+)?)')
+STYLE_ALIASES = {
+    "ranch": "Ranch",
+    "one story": "Ranch",
+    "1 story": "Ranch",
+    "two story": "Two Story",
+    "2 story": "Two Story",
+    "tri-level": "Tri-Level",
+    "tri level": "Tri-Level",
+    "bi-level": "Bi-Level",
+    "bi level": "Bi-Level",
+}
+
+NUMBER_RE = re.compile(r"\$?\s*([\d,]+(?:\.\d+)?)")
 
 
 def clean_value(value: Any) -> Any:
@@ -134,7 +191,7 @@ def clean_value(value: Any) -> Any:
         return None
     if isinstance(value, str):
         value = value.strip()
-        if not value or value.lower() in {'n/a', 'na', 'none', 'null', '--'}:
+        if not value or value.lower() in {"n/a", "na", "none", "null", "--"}:
             return None
     return value
 
@@ -145,7 +202,7 @@ def to_float(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
-    text = str(value).replace('$', '').replace(',', '').strip()
+    text = str(value).replace("$", "").replace(",", "").strip()
     try:
         return float(text)
     except ValueError:
@@ -168,7 +225,7 @@ def extract_number(value: Any) -> int | float | None:
     match = NUMBER_RE.search(str(value))
     if not match:
         return None
-    cleaned = match.group(1).replace(',', '')
+    cleaned = match.group(1).replace(",", "")
     number = float(cleaned)
     return int(number) if number.is_integer() else number
 
@@ -186,6 +243,14 @@ def normalize_property_subtype(value: Any, fallback_type: str | None = None) -> 
     if text is not None:
         lowered = str(text).strip().lower()
         return PROPERTY_SUBTYPE_ALIASES.get(lowered, str(text).strip().title())
-    if fallback_type == 'Single Family Residence':
-        return 'SFR'
+    if fallback_type == "Single Family Residence":
+        return "SFR"
     return None
+
+
+def normalize_style(value: Any) -> str | None:
+    text = clean_value(value)
+    if text is None:
+        return None
+    lowered = str(text).strip().lower()
+    return STYLE_ALIASES.get(lowered, str(text).strip().title())

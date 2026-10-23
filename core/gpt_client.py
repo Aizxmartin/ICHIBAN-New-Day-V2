@@ -47,8 +47,10 @@ Critical operating rules:
 6. Avoid generic market commentary. Connect the local radius/micro-market to the specific subject property.
 7. Address whether this property is likely to sell faster, slower, or in line with its micro-market, and why.
 8. Include risk factors, buyer resistance, pricing sensitivity, and a recommended list price range when supported by the supplied payload.
-9. Include the required ICHIBAN methodology/disclaimer language near the end.
+9. Include the required ICHIBAN methodology/disclaimer language near the end as clean boilerplate.
 10. Present the output as clean report text suitable for .docx export.
+11. Keep AVM evidence, comp-based evidence, and recommended list price range separate. AVMs are secondary support only and must not be blended into the comp-based range.
+12. Do not expose backend implementation language in the client report. Avoid terms such as payload, API, module, deterministic engine, future module, or debug. Convert any limitations into plain market-facing language.
 
 ICHIBAN GOVERNANCE JSON:
 {json.dumps(governance, indent=2, ensure_ascii=False, default=str)}

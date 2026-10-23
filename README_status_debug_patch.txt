@@ -1,0 +1,1 @@
+Replace core/comp_engine.py and app/pages/4_valuation_run.py. This patch adds status debug and robust closed-row counting.\n

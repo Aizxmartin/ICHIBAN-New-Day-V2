@@ -4,6 +4,7 @@ numpy
 openpyxl
 python-docx
 PyPDF2
+pypdf
 pdfplumber
 pymupdf
 Pillow

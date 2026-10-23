@@ -14,7 +14,8 @@ except ImportError:  # pragma: no cover
     from pypdf import PdfReader
 
 from core.address_subject_profile import blank_subject_profile
-from core.subject_acquisition.validate_subject_profile import normalize_property_type, validate_subject_profile
+from core.subject_acquisition.validate_subject_profile import validate_subject_profile
+from core.subject_mapping import FIELD_LABEL_ALIASES, normalize_property_subtype, normalize_property_type
 
 # Broad enough for common Colorado subject reports without forcing a city list.
 ADDRESS_LINE_RE = re.compile(
@@ -24,56 +25,6 @@ ADDRESS_LINE_RE = re.compile(
 
 ZIP_ONLY_RE = re.compile(r"\b\d{5}(?:-\d{4})?\b")
 NUMBER_RE = re.compile(r"\$?\s*([\d,]+(?:\.\d+)?)")
-
-FIELD_LABEL_ALIASES: dict[str, list[str]] = {
-    "subject_address": [
-        "Property Address",
-        "Subject Address",
-        "Address",
-        "Situs Address",
-        "Property Location",
-        "Property",
-    ],
-    "above_grade_sqft": [
-        "Bldg Sq Ft - Above Ground",
-        "Above Ground Sq Ft",
-        "Above Grade Finished Area",
-        "Above Grade Finished Sq Ft",
-        "Above Grade Sq Ft",
-        "Above Grade Area",
-        "Gross Living Area",
-        "Living Area",
-        "Main Level Sq Ft",
-        "Main Level Area",
-        "Main Level Living Area",
-        "Finished Area Above Grade",
-        "Building Area Total",
-    ],
-    "property_type": [
-        "Property Type",
-        "Type",
-        "Residential Type",
-    ],
-    "property_subtype": [
-        "Property Sub Type",
-        "Property Subtype",
-        "Sub Type",
-        "Style",
-    ],
-    "beds": ["Beds", "Bedrooms", "Total Bedrooms"],
-    "baths": ["Baths", "Bathrooms", "Total Baths", "Bathrooms Total"],
-    "year_built": ["Year Built", "Actual Year Built"],
-    "real_avm": ["RealAVM", "Real AVM"],
-    "real_avm_range": ["RealAVM Range", "Real AVM Range"],
-    "basement_sqft": ["Basement", "Basement Sq Ft", "Basement SF", "Basement Area"],
-    "finished_basement_sqft": [
-        "Finished Basement Sq Ft",
-        "Finished Basement SF",
-        "Bsmt Finished Area",
-        "Finished Basement",
-    ],
-    "lot_size_sqft": ["Lot Size Sq Ft", "Lot Size", "Lot Sq Ft", "Site Area"],
-}
 
 PROPERTY_TYPE_HINTS = {
     "single family residence": "Single Family Residence",
@@ -321,7 +272,7 @@ def _extract_fields_from_variant(name: str, text: str, collector: ExtractionColl
     if not collector.values.get("property_subtype"):
         raw_subtype = _find_value_near_label_in_lines(FIELD_LABEL_ALIASES["property_subtype"], lines)
         if raw_subtype:
-            collector.set("property_subtype", raw_subtype.title(), name)
+            collector.set("property_subtype", normalize_property_subtype(raw_subtype), name)
 
 
 
